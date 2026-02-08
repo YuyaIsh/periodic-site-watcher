@@ -1,20 +1,7 @@
 // Options Page: 設定編集、storage保存
 
-/**
- * 新規サイト追加時のデフォルト設定
- * 
- * ユーザーが最小限の入力でサイトを追加できるよう、
- * 安全なデフォルト値を設定している。
- */
-const DEFAULT_SITE = {
-  url: '',
-  enabled: true,
-  timeoutSec: 30,
-  schedule: {
-    type: 'hourly',
-    minute: 0
-  }
-};
+// 共通ユーティリティを読み込む（HTMLからscriptタグで読み込まれる）
+// utils/validation.js と utils/schedule.js が先に読み込まれている必要がある
 
 /**
  * サイト一覧を読み込んで表示する
@@ -210,49 +197,20 @@ function updateScheduleFields(siteId) {
 }
 
 /**
- * API URLのバリデーション
+ * 新規サイト追加時のデフォルト設定
  * 
- * SSRF（Server-Side Request Forgery）対策として、
- * プロトコルをhttp/httpsに制限する。
- * file://、ftp://等の内部ネットワークへのアクセスを防止する。
- * 
- * @param {string} url - 検証対象のURL
- * @returns {boolean} 有効なURLの場合true
+ * ユーザーが最小限の入力でサイトを追加できるよう、
+ * 安全なデフォルト値を設定している。
  */
-function isValidApiUrl(url) {
-  if (!url || !url.trim()) {
-    return false;
+const DEFAULT_SITE = {
+  url: '',
+  enabled: true,
+  timeoutSec: 30,
+  schedule: {
+    type: 'hourly',
+    minute: 0
   }
-  try {
-    const parsed = new URL(url.trim());
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 時刻形式のバリデーション（HH:MM）
- * 
- * 正規表現で形式をチェックし、さらに数値範囲（0-23時、0-59分）を検証する。
- * 文字列の形式チェックだけでは"25:00"や"12:60"が通ってしまうため、
- * 数値範囲の検証も必須。
- * 
- * @param {string} time - 検証対象の時刻文字列
- * @returns {boolean} 有効な時刻形式の場合true
- */
-function isValidTimeFormat(time) {
-  if (!time || typeof time !== 'string') {
-    return false;
-  }
-  const match = time.match(/^(\d{2}):(\d{2})$/);
-  if (!match) {
-    return false;
-  }
-  const hours = parseInt(match[1], 10);
-  const minutes = parseInt(match[2], 10);
-  return hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60;
-}
+};
 
 /**
  * すべてのサイト設定を保存する
@@ -437,51 +395,6 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-/**
- * スケジュール計算関数（Options Page用）
- * 
- * service-worker.jsのcomputeNextRunAfterSuccessと同じロジック。
- * Options Pageで次回実行時刻を表示するために使用する。
- * 
- * コード重複はあるが、Options PageとService Workerは異なるコンテキストで
- * 実行されるため、共通モジュール化は困難（現時点では重複を許容）。
- * 
- * @param {number} now - 現在時刻（epoch ms）
- * @param {Object} schedule - スケジュール設定
- * @returns {number} 次回実行時刻（epoch ms）
- */
-function computeNextRunAfterSuccess(now, schedule) {
-  const date = new Date(now);
-  
-  if (schedule.type === 'hourly') {
-    date.setMinutes(schedule.minute, 0, 0);
-    if (date.getTime() <= now) {
-      date.setHours(date.getHours() + 1);
-    }
-    return date.getTime();
-  } else if (schedule.type === 'daily') {
-    const [hours, minutes] = schedule.at.split(':').map(Number);
-    date.setHours(hours, minutes, 0, 0);
-    if (date.getTime() <= now) {
-      date.setDate(date.getDate() + 1);
-    }
-    return date.getTime();
-  } else if (schedule.type === 'weekly') {
-    const [hours, minutes] = schedule.at.split(':').map(Number);
-    const currentDay = date.getDay();
-    const targetDay = schedule.dow;
-    let daysToAdd = (targetDay - currentDay + 7) % 7;
-    
-    date.setHours(hours, minutes, 0, 0);
-    if (daysToAdd === 0 && date.getTime() <= now) {
-      daysToAdd = 7;
-    }
-    date.setDate(date.getDate() + daysToAdd);
-    return date.getTime();
-  }
-  
-  return now + 60 * 60 * 1000;
-}
 
 // ページ読み込み時にサイト一覧を表示し、イベントリスナーを設定
 document.addEventListener('DOMContentLoaded', () => {
