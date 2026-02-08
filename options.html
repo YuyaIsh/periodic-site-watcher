@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>定期巡回サイトウォッチャー - 設定</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+    }
+    .site-section {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .site-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #eee;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      color: #555;
+    }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    input[type="checkbox"] {
+      width: auto;
+      margin-right: 5px;
+    }
+    .schedule-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+    }
+    .state-display {
+      background: #f9f9f9;
+      padding: 15px;
+      border-radius: 4px;
+      margin-top: 15px;
+      font-size: 13px;
+    }
+    .state-item {
+      margin: 5px 0;
+    }
+    .state-label {
+      font-weight: 500;
+      color: #666;
+    }
+    button {
+      background: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+    button:hover {
+      background: #357ae8;
+    }
+    button.delete {
+      background: #ea4335;
+    }
+    button.delete:hover {
+      background: #d33b2c;
+    }
+    .add-site {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .status-ok {
+      color: #34a853;
+    }
+    .status-fail {
+      color: #ea4335;
+    }
+  </style>
+</head>
+<body>
+  <h1>定期巡回サイトウォッチャー - 設定</h1>
+  
+  <div class="site-section">
+    <h2>API設定</h2>
+    <div class="form-group">
+      <label>API URL:</label>
+      <input type="text" id="api-url" placeholder="http://localhost:3000/collect" style="width: 100%;">
+    </div>
+  </div>
+  
+  <div class="add-site">
+    <h2>サイトを追加</h2>
+    <div class="form-group">
+      <label>Site ID:</label>
+      <input type="text" id="new-site-id" placeholder="例: moneyforward">
+    </div>
+    <button id="add-site-button">サイトを追加</button>
+  </div>
+  
+  <div id="sites-container"></div>
+  
+  <div style="text-align: center; margin-top: 30px;">
+    <button id="save-all-button" style="background: #34a853; font-size: 16px; padding: 12px 30px;">
+      すべて保存
+    </button>
+  </div>
+  
+  <script src="options.js"></script>
+</body>
+</html>
+

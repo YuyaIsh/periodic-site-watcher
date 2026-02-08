@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "定期巡回サイトウォッチャー",
+  "version": "1.0.0",
+  "description": "指定した複数サイトを定期的に順番に巡回し、データを取得してAPIへ送信する",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "定期巡回サイトウォッチャー"
+  }
+}
+
