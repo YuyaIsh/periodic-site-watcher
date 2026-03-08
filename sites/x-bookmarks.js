@@ -38,14 +38,23 @@ async function collect_x_bookmarks() {
     return { tweets: [] };
   }
   
-  // 2. 各ツイートから基本情報を抽出（重複チェック付き）
-  // Phase 4: 引用RTの再帰的取得のために、ツイート要素のリストを渡す
+  // 2. ツイートID→要素のMapを構築（効率的な検索のため）
+  const tweetIdMap = new Map();
+  for (const element of tweetElements) {
+    const tweetId = extractTweetId(element);
+    if (tweetId) {
+      tweetIdMap.set(tweetId, element);
+    }
+  }
+  
+  // 3. 各ツイートから基本情報を抽出（重複チェック付き）
+  // Phase 4: 引用RTの再帰的取得のために、ツイートIDのMapを渡す
   const tweets = [];
   const seenTweetIds = new Set(); // 重複チェック用
   
   for (const element of tweetElements) {
     try {
-      const tweetData = extractTweetBasicData(element, tweetElements);
+      const tweetData = extractTweetBasicData(element, tweetIdMap);
       if (tweetData && !seenTweetIds.has(tweetData.tweetId)) {
         seenTweetIds.add(tweetData.tweetId);
         tweets.push(tweetData);
@@ -56,7 +65,7 @@ async function collect_x_bookmarks() {
     }
   }
   
-  // 3. 設定を取得（モックモード時は設定を取得しない）
+  // 4. 設定を取得（モックモード時は設定を取得しない）
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   let config = null;
   
@@ -81,7 +90,7 @@ async function collect_x_bookmarks() {
     };
   }
   
-  // 4. 各ツイートをNotion APIに送信（モックモード時もsendTweetToNotionを呼び出す）
+  // 5. 各ツイートをNotion APIに送信（モックモード時もsendTweetToNotionを呼び出す）
   for (const tweet of tweets) {
     try {
       // モックモード時はconfigがnullでもsendTweetToNotion内で処理される
@@ -114,16 +123,26 @@ function extractTweetElements() {
  * 各ツイートから基本情報を抽出する
  * 
  * @param {Element} tweetElement - ツイート要素（article[data-testid="tweet"]）
- * @param {NodeListOf<Element>|Array<Element>} allTweetElements - 全ツイート要素のリスト（Phase 4: 引用RTの再帰的取得用）
+ * @param {Map<string, Element>} tweetIdMap - ツイートID→要素のMap（Phase 4: 引用RTの再帰的取得用）
  * @param {number} quoteDepth - 現在の引用階層（デフォルト: 0）
+ * @param {Set<string>} processedIds - 処理済みツイートIDのセット（循環参照検出用、デフォルト: 空のSet）
  * @returns {Object|null} ツイートデータオブジェクト（抽出失敗時はnull）
  */
-function extractTweetBasicData(tweetElement, allTweetElements = null, quoteDepth = 0) {
+function extractTweetBasicData(tweetElement, tweetIdMap = null, quoteDepth = 0, processedIds = new Set()) {
   // 2.1 ツイートIDの抽出
   const tweetId = extractTweetId(tweetElement);
   if (!tweetId) {
     return null;
   }
+  
+  // 循環参照検出: 既に処理中のツイートIDの場合はnullを返す
+  if (processedIds.has(tweetId)) {
+    return null;
+  }
+  
+  // 処理済みIDセットに追加
+  const currentProcessedIds = new Set(processedIds);
+  currentProcessedIds.add(tweetId);
   
   // 2.2 ツイートURLの生成
   const url = extractTweetUrl(tweetElement, tweetId);
@@ -138,7 +157,7 @@ function extractTweetBasicData(tweetElement, allTweetElements = null, quoteDepth
   const postedAt = extractPostedAt(tweetElement);
   
   // 2.6 引用RTの抽出（Phase 4: 再帰的取得対応）
-  const quotedTweet = extractQuotedTweet(tweetElement, allTweetElements, quoteDepth);
+  const quotedTweet = extractQuotedTweet(tweetElement, tweetIdMap, quoteDepth, currentProcessedIds);
   
   return {
     tweetId,
@@ -348,11 +367,12 @@ function buildTweetUrl(href, tweetId) {
  * 引用RTを抽出する（Phase 4: 再帰的取得対応）
  * 
  * @param {Element} tweetElement - ツイート要素
- * @param {NodeListOf<Element>|Array<Element>|null} allTweetElements - 全ツイート要素のリスト（同じページ内検索用）
+ * @param {Map<string, Element>|null} tweetIdMap - ツイートID→要素のMap（同じページ内検索用）
  * @param {number} quoteDepth - 現在の引用階層（再帰制限用、デフォルト: 0）
+ * @param {Set<string>} processedIds - 処理済みツイートIDのセット（循環参照検出用）
  * @returns {Object|null} 引用RTデータオブジェクト（引用RTがない場合はnull）
  */
-function extractQuotedTweet(tweetElement, allTweetElements = null, quoteDepth = 0) {
+function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, processedIds = new Set()) {
   try {
     // 引用RTの判定: [data-testid="card.wrapper"]が存在する場合
     const cardWrapper = tweetElement.querySelector('[data-testid="card.wrapper"]');
@@ -377,6 +397,15 @@ function extractQuotedTweet(tweetElement, allTweetElements = null, quoteDepth = 
       const quotedTweetId = match[1];
       const quotedUrl = buildTweetUrl(href, quotedTweetId);
       
+      // 循環参照検出: 既に処理中のツイートIDの場合はURLとIDのみを返す
+      if (processedIds.has(quotedTweetId)) {
+        console.warn(`循環参照を検出しました: ツイートID ${quotedTweetId}`);
+        return {
+          tweetId: quotedTweetId,
+          url: quotedUrl
+        };
+      }
+      
       // Phase 4: 再帰的取得の実装
       // 最大階層に達している場合は、URLとIDのみを返す
       if (quoteDepth >= MAX_QUOTE_DEPTH) {
@@ -387,25 +416,35 @@ function extractQuotedTweet(tweetElement, allTweetElements = null, quoteDepth = 
       }
       
       // 同じページ内で元ツイートを検索
-      if (allTweetElements && allTweetElements.length > 0) {
-        const quotedTweetElement = findTweetElementById(allTweetElements, quotedTweetId);
+      if (tweetIdMap && tweetIdMap.has(quotedTweetId)) {
+        const quotedTweetElement = tweetIdMap.get(quotedTweetId);
         
         if (quotedTweetElement) {
-          // 見つかった場合は詳細情報を抽出（再帰的に）
-          const quotedTweetData = extractTweetBasicData(
-            quotedTweetElement, 
-            allTweetElements, 
-            quoteDepth + 1
-          );
-          
-          if (quotedTweetData) {
+          try {
+            // 見つかった場合は詳細情報を抽出（再帰的に）
+            const quotedTweetData = extractTweetBasicData(
+              quotedTweetElement, 
+              tweetIdMap, 
+              quoteDepth + 1,
+              processedIds
+            );
+            
+            if (quotedTweetData) {
+              return {
+                tweetId: quotedTweetData.tweetId,
+                url: quotedTweetData.url,
+                text: quotedTweetData.text,
+                author: quotedTweetData.author,
+                postedAt: quotedTweetData.postedAt,
+                quotedTweet: quotedTweetData.quotedTweet // 再帰的に引用RTも取得
+              };
+            }
+          } catch (error) {
+            console.warn('引用RTの詳細情報抽出エラー:', error);
+            // エラー時はURLとIDのみを返す
             return {
-              tweetId: quotedTweetData.tweetId,
-              url: quotedTweetData.url,
-              text: quotedTweetData.text,
-              author: quotedTweetData.author,
-              postedAt: quotedTweetData.postedAt,
-              quotedTweet: quotedTweetData.quotedTweet // 再帰的に引用RTも取得
+              tweetId: quotedTweetId,
+              url: quotedUrl
             };
           }
         }
@@ -425,22 +464,6 @@ function extractQuotedTweet(tweetElement, allTweetElements = null, quoteDepth = 
   }
 }
 
-/**
- * ツイートIDからツイート要素を検索する
- * 
- * @param {NodeListOf<Element>|Array<Element>} tweetElements - 全ツイート要素のリスト
- * @param {string} tweetId - 検索するツイートID
- * @returns {Element|null} 見つかったツイート要素（見つからない場合はnull）
- */
-function findTweetElementById(tweetElements, tweetId) {
-  for (const element of tweetElements) {
-    const elementTweetId = extractTweetId(element);
-    if (elementTweetId === tweetId) {
-      return element;
-    }
-  }
-  return null;
-}
 
 /**
  * Notion APIにツイートを送信する関数（リトライ機能付き）
@@ -671,11 +694,31 @@ function buildNotionRequest(tweetData, config) {
  * 引用RTブロックを構築する（再帰的対応）
  * 
  * @param {Object} quotedTweet - 引用RTデータオブジェクト
+ * @param {number} depth - 現在の再帰階層（デフォルト: 0）
  * @returns {Object|null} Notion APIのquoteブロックオブジェクト（構築失敗時はnull）
  */
-function buildQuotedTweetBlock(quotedTweet) {
+function buildQuotedTweetBlock(quotedTweet, depth = 0) {
   if (!quotedTweet || !quotedTweet.url || !quotedTweet.tweetId) {
     return null;
+  }
+  
+  // 最大階層に達した場合はURLのみを返す
+  if (depth >= MAX_QUOTE_DEPTH) {
+    return {
+      object: 'block',
+      type: 'quote',
+      quote: {
+        rich_text: [{
+          type: 'text',
+          text: {
+            content: quotedTweet.url,
+            link: {
+              url: quotedTweet.url
+            }
+          }
+        }]
+      }
+    };
   }
   
   const richText = [];
@@ -732,9 +775,9 @@ function buildQuotedTweetBlock(quotedTweet) {
     }
   };
   
-  // Phase 4: 再帰的に引用RTがある場合は、子ブロックとして追加
+  // Phase 4: 再帰的に引用RTがある場合は、子ブロックとして追加（階層制限付き）
   if (quotedTweet.quotedTweet) {
-    const nestedQuoteBlock = buildQuotedTweetBlock(quotedTweet.quotedTweet);
+    const nestedQuoteBlock = buildQuotedTweetBlock(quotedTweet.quotedTweet, depth + 1);
     if (nestedQuoteBlock) {
       quoteBlock.children = [nestedQuoteBlock];
     }
