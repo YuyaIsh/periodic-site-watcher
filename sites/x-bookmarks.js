@@ -22,6 +22,7 @@ const MAX_RETRY_COUNT = 3;
  */
 async function collect_x_bookmarks() {
   // Phase 2: ツイート抽出とNotion API送信統合
+  // Phase 3: 引用RTの基本対応（URLとツイートIDのみ保存）
   
   // 1. DOMから全ツイート要素を取得
   const tweetElements = extractTweetElements();
@@ -127,12 +128,16 @@ function extractTweetBasicData(tweetElement) {
   // 2.5 投稿日時の抽出
   const postedAt = extractPostedAt(tweetElement);
   
+  // 2.6 引用RTの抽出（Phase 3）
+  const quotedTweet = extractQuotedTweet(tweetElement);
+  
   return {
     tweetId,
     url,
     text,
     author,
-    postedAt
+    postedAt,
+    quotedTweet
   };
 }
 
@@ -168,10 +173,10 @@ function extractTweetUrl(tweetElement, tweetId) {
   // スクリーンネームを取得
   const screenName = extractScreenName(tweetElement);
   if (screenName) {
-    return `https://x.com/${screenName}/status/${tweetId}`;
+    return buildTweetUrl(`/${screenName}/status/${tweetId}`, tweetId);
   }
   // スクリーンネームが取得できない場合はIDのみ
-  return `https://x.com/i/web/status/${tweetId}`;
+  return buildTweetUrl('', tweetId);
 }
 
 /**
@@ -297,6 +302,81 @@ function extractPostedAt(tweetElement) {
   }
   // 日時が取得できない場合は現在時刻を使用
   return new Date().toISOString();
+}
+
+/**
+ * ツイートURLを生成する（共通関数）
+ * 
+ * @param {string} href - href属性の値
+ * @param {string} tweetId - ツイートID
+ * @returns {string} 完全なツイートURL
+ */
+function buildTweetUrl(href, tweetId) {
+  if (!href || !tweetId) {
+    return `https://x.com/i/web/status/${tweetId || ''}`;
+  }
+  
+  if (href.startsWith('http')) {
+    // 既に完全なURLの場合
+    return href;
+  }
+  
+  if (href.startsWith('/')) {
+    // 相対パスの場合
+    const screenNameMatch = href.match(/^\/([^\/]+)\/status\//);
+    if (screenNameMatch && screenNameMatch[1]) {
+      return `https://x.com${href}`;
+    }
+    // スクリーンネームが取得できない場合はIDのみ
+    return `https://x.com/i/web/status/${tweetId}`;
+  }
+  
+  // その他の形式の場合はIDのみ
+  return `https://x.com/i/web/status/${tweetId}`;
+}
+
+/**
+ * 引用RTを抽出する（Phase 3: 基本対応）
+ * 
+ * @param {Element} tweetElement - ツイート要素
+ * @returns {Object|null} 引用RTデータオブジェクト（引用RTがない場合はnull）
+ */
+function extractQuotedTweet(tweetElement) {
+  try {
+    // 引用RTの判定: [data-testid="card.wrapper"]が存在する場合
+    const cardWrapper = tweetElement.querySelector('[data-testid="card.wrapper"]');
+    if (!cardWrapper) {
+      return null;
+    }
+    
+    // 引用RT内のリンクから元ツイートのURLとツイートIDを抽出
+    // 通常は1つのリンクのみだが、最初に見つかったものを使用
+    const links = cardWrapper.querySelectorAll('a[href*="/status/"]');
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      if (!href) {
+        continue;
+      }
+      
+      const match = href.match(/\/status\/(\d+)/);
+      if (!match || !match[1]) {
+        continue;
+      }
+      
+      const quotedTweetId = match[1];
+      const quotedUrl = buildTweetUrl(href, quotedTweetId);
+      
+      return {
+        tweetId: quotedTweetId,
+        url: quotedUrl
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.warn('引用RT抽出エラー:', error);
+    return null; // エラー時は引用RTなしとして扱う
+  }
 }
 
 /**
@@ -466,6 +546,34 @@ async function sendTweetToNotion(tweetData, config) {
  * @returns {Object} Notion APIリクエストボディ
  */
 function buildNotionRequest(tweetData, config) {
+  // 引用RTデータのバリデーション
+  let quotedTweetBlock = null;
+  if (tweetData.quotedTweet) {
+    if (tweetData.quotedTweet.url && tweetData.quotedTweet.tweetId) {
+      // Phase 3: 引用RTブロック（基本対応）
+      // URLをリンクとして表示
+      quotedTweetBlock = {
+        object: 'block',
+        type: 'quote',
+        quote: {
+          rich_text: [
+            {
+              type: 'text',
+              text: {
+                content: tweetData.quotedTweet.url,
+                link: {
+                  url: tweetData.quotedTweet.url
+                }
+              }
+            }
+          ]
+        }
+      };
+    } else {
+      console.warn('引用RTデータが不完全です:', tweetData.quotedTweet);
+    }
+  }
+  
   return {
     parent: {
       database_id: config.notionDatabaseId
@@ -502,7 +610,9 @@ function buildNotionRequest(tweetData, config) {
       }
     },
     children: [
-      // Phase 3以降で画像ブロックや引用RTブロックを追加
+      // Phase 3: 引用RTブロック（基本対応）
+      ...(quotedTweetBlock ? [quotedTweetBlock] : []),
+      // Phase 5で画像ブロックを追加
     ]
   };
 }
