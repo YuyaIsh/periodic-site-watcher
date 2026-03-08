@@ -15,6 +15,11 @@ const MAX_RETRY_COUNT = 3;
 const MAX_QUOTE_DEPTH = 5;
 
 /**
+ * Twitterメディア画像URLのプレフィックス
+ */
+const TWITTER_MEDIA_URL_PREFIX = 'https://pbs.twimg.com/media/';
+
+/**
  * サイト別データ抽出アダプタ関数
  * 
  * xのブックマークに追加されたものを取得
@@ -156,7 +161,10 @@ function extractTweetBasicData(tweetElement, tweetIdMap = null, quoteDepth = 0, 
   // 2.5 投稿日時の抽出
   const postedAt = extractPostedAt(tweetElement);
   
-  // 2.6 引用RTの抽出（Phase 4: 再帰的取得対応）
+  // 2.6 画像URLの抽出（Phase 5）
+  const images = extractTweetImages(tweetElement);
+  
+  // 2.7 引用RTの抽出（Phase 4: 再帰的取得対応）
   const quotedTweet = extractQuotedTweet(tweetElement, tweetIdMap, quoteDepth, currentProcessedIds);
   
   return {
@@ -165,6 +173,7 @@ function extractTweetBasicData(tweetElement, tweetIdMap = null, quoteDepth = 0, 
     text,
     author,
     postedAt,
+    images,
     quotedTweet
   };
 }
@@ -330,6 +339,52 @@ function extractPostedAt(tweetElement) {
   }
   // 日時が取得できない場合は現在時刻を使用
   return new Date().toISOString();
+}
+
+/**
+ * ツイート内の画像URLを抽出する（Phase 5）
+ * 
+ * @param {Element} tweetElement - ツイート要素
+ * @returns {string[]} 画像URLの配列（画像がない場合は空配列）
+ */
+function extractTweetImages(tweetElement) {
+  const images = [];
+  const seenUrls = new Set(); // 重複チェック用Set（パフォーマンス向上）
+  
+  // プロフィール画像を除外するための要素を事前に取得（パフォーマンス向上）
+  const avatarElement = tweetElement.querySelector('[data-testid="UserAvatar"]');
+  
+  // ツイート内の全てのimg要素を取得
+  const imgElements = tweetElement.querySelectorAll('img');
+  
+  for (const img of imgElements) {
+    const src = img.getAttribute('src');
+    if (!src) {
+      continue;
+    }
+    
+    // プロフィール画像を除外
+    // 1. [data-testid="UserAvatar"]要素内の画像は除外
+    if (avatarElement && avatarElement.contains(img)) {
+      continue;
+    }
+    
+    // 2. profile_imagesを含むURLは除外
+    if (src.includes('profile_images') || src.includes('profile_banners')) {
+      continue;
+    }
+    
+    // 3. https://pbs.twimg.com/media/で始まる画像URLのみを抽出
+    if (src.startsWith(TWITTER_MEDIA_URL_PREFIX)) {
+      // 重複チェック（Setを使用してパフォーマンス向上）
+      if (!seenUrls.has(src)) {
+        seenUrls.add(src);
+        images.push(src);
+      }
+    }
+  }
+  
+  return images;
 }
 
 /**
@@ -647,6 +702,23 @@ function buildNotionRequest(tweetData, config) {
     }
   }
   
+  // Phase 5: 画像ブロックの構築
+  const imageBlocks = [];
+  if (tweetData.images && Array.isArray(tweetData.images) && tweetData.images.length > 0) {
+    for (const imageUrl of tweetData.images) {
+      imageBlocks.push({
+        object: 'block',
+        type: 'image',
+        image: {
+          type: 'external',
+          external: {
+            url: imageUrl
+          }
+        }
+      });
+    }
+  }
+  
   return {
     parent: {
       database_id: config.notionDatabaseId
@@ -683,9 +755,10 @@ function buildNotionRequest(tweetData, config) {
       }
     },
     children: [
+      // Phase 5: 画像ブロック
+      ...imageBlocks,
       // Phase 4: 引用RTブロック（再帰的取得対応）
       ...quotedTweetBlocks,
-      // Phase 5で画像ブロックを追加
     ]
   };
 }
