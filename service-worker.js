@@ -395,6 +395,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// Content Script からのモックログメッセージを受信
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'MOCK_LOG') {
+    console.log(message.message, message.data);
+    return false;
+  }
+});
+
 // オプション画面からの「今すぐ実行」メッセージを受信
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'RUN_SITE') {

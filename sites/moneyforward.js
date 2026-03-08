@@ -73,13 +73,6 @@ async function sendMfExpenseLogs(instrument, items) {
   const { settings } = await chrome.storage.local.get('settings');
   const siteConfig = settings?.sites?.['moneyforward'];
 
-  if (!siteConfig?.ifaApiUrl) {
-    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
-  }
-  if (!siteConfig?.ifaApiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
-  }
-
   const requestBody = {
     instrument,
     items,
@@ -88,14 +81,37 @@ async function sendMfExpenseLogs(instrument, items) {
   // モックモードの場合は fetch せず console.log で出力
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   if (mockMode) {
-    console.log('[Mock] Would POST to', siteConfig.ifaApiUrl, {
+    const mockLog = {
+      url: siteConfig?.ifaApiUrl || '(URL未設定)',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer [REDACTED]',
       },
       body: requestBody
-    });
+    };
+    // Content Script のコンソールにも出力
+    console.log('[Mock] Would POST to', mockLog.url, mockLog);
+    // Service Worker のコンソールにも出力されるようにメッセージを送信
+    try {
+      chrome.runtime.sendMessage({
+        type: 'MOCK_LOG',
+        message: `[Mock] Would POST to ${mockLog.url}`,
+        data: mockLog
+      }).catch(() => {
+        // Service Worker が応答しない場合（通常の実行時など）は無視
+      });
+    } catch (e) {
+      // メッセージ送信に失敗した場合は無視
+    }
     return { result: 'ok', mock: true };
+  }
+
+  // モックモードでない場合のみ環境変数をチェック
+  if (!siteConfig?.ifaApiUrl) {
+    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
+  }
+  if (!siteConfig?.ifaApiKey) {
+    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
   }
 
   const response = await fetch(siteConfig.ifaApiUrl, {
