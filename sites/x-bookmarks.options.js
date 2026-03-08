@@ -6,6 +6,7 @@
 (function (g) {
   g.__SITE_OPTIONS__ = g.__SITE_OPTIONS__ || {};
   g.__SITE_OPTIONS__['x-bookmarks'] = [
-    { key: 'apiUrl', label: 'API URL', type: 'url' }
+    { key: 'notionApiKey', label: 'Notion API Key', type: 'password' },
+    { key: 'notionDatabaseId', label: 'Notion Database ID', type: 'text' }
   ];
 })(typeof window !== 'undefined' ? window : self);
