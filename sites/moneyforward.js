@@ -46,7 +46,9 @@ function extractTableData() {
     const datePart = sortValue.split('-')[0];
     if (!datePart) continue;
     const usedOn = datePart.replace(/\//g, '-');
-    const amount = amountSpan.textContent?.trim() || '';
+    const amountRaw = amountSpan.textContent?.trim() || '';
+    // 正負を反転: 数値に変換して符号を反転
+    const amount = amountRaw ? String(-parseFloat(amountRaw.replace(/,/g, ''))) : '';
     const dataOriginalTitle = noteTd?.getAttribute('data-original-title') || '';
     const cardType = normalizeCardType(dataOriginalTitle);
     if (cardType === null && dataOriginalTitle) {
