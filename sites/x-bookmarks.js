@@ -1,4 +1,15 @@
 /**
+ * Notion APIのレート制限対応待機時間（ミリ秒）
+ * Notion APIのレート制限は3リクエスト/秒のため、350ms待機
+ */
+const NOTION_API_RATE_LIMIT_DELAY_MS = 350;
+
+/**
+ * レート制限エラー（429）の最大再試行回数
+ */
+const MAX_RETRY_COUNT = 3;
+
+/**
  * サイト別データ抽出アダプタ関数
  * 
  * xのブックマークに追加されたものを取得
@@ -37,11 +48,10 @@ async function collect_x_bookmarks() {
     }
   }
   
-  // 3. 設定を取得（モックモード時も設定を取得するが、API Keyは不要）
+  // 3. 設定を取得（モックモード時は設定を取得しない）
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   let config = null;
   
-  // モックモード時は設定を取得しない（sendTweetToNotion内でモック処理）
   if (!mockMode) {
     // 通常モード: 設定を取得
     const result = await chrome.storage.local.get('settings');
@@ -51,13 +61,15 @@ async function collect_x_bookmarks() {
     const notionApiKey = siteSettings.notionApiKey;
     const notionDatabaseId = siteSettings.notionDatabaseId;
     
-    if (!notionApiKey || !notionDatabaseId) {
+    // API Key/Database IDの検証（空文字列や空白のみもチェック）
+    if (!notionApiKey || !notionDatabaseId || 
+        notionApiKey.trim() === '' || notionDatabaseId.trim() === '') {
       throw new Error('Notion API KeyまたはDatabase IDが設定されていません');
     }
     
     config = {
-      notionApiKey,
-      notionDatabaseId
+      notionApiKey: notionApiKey.trim(),
+      notionDatabaseId: notionDatabaseId.trim()
     };
   }
   
@@ -65,9 +77,9 @@ async function collect_x_bookmarks() {
   for (const tweet of tweets) {
     try {
       // モックモード時はconfigがnullでもsendTweetToNotion内で処理される
-      await sendTweetToNotion(tweet, config);
-      // レート制限対応: 350ms待機
-      await new Promise(resolve => setTimeout(resolve, 350));
+      await sendTweetToNotionWithRetry(tweet, config);
+      // レート制限対応: 待機
+      await new Promise(resolve => setTimeout(resolve, NOTION_API_RATE_LIMIT_DELAY_MS));
     } catch (error) {
       // 認証エラー（401）の場合は全体を失敗としてthrow
       if (error.message && error.message.includes('認証エラー')) {
@@ -288,41 +300,32 @@ function extractPostedAt(tweetElement) {
 }
 
 /**
- * モックモード時のログ出力機能
+ * Notion APIにツイートを送信する関数（リトライ機能付き）
  * 
- * @param {Array<Object>} tweets - 抽出したツイートデータの配列
- * @param {Object|null} config - 設定オブジェクト（モックモード時はnull）
+ * @param {Object} tweetData - 抽出したツイートデータオブジェクト
+ * @param {Object} config - 設定オブジェクト（notionApiKey, notionDatabaseId）
+ * @param {number} retryCount - 現在のリトライ回数（デフォルト: 0）
+ * @returns {Promise<void>} 成功時はresolve、エラー時はthrow
  */
-function mockModeLogging(tweets, config) {
-  console.log('=== モックモード: ツイート抽出結果 ===');
-  console.log(`抽出ツイート数: ${tweets.length}`);
-  
-  for (let i = 0; i < tweets.length; i++) {
-    const tweet = tweets[i];
-    console.log(`\n--- ツイート ${i + 1} ---`);
-    console.log(`Tweet ID: ${tweet.tweetId}`);
-    console.log(`URL: ${tweet.url}`);
-    console.log(`Text: ${tweet.text.substring(0, 100)}${tweet.text.length > 100 ? '...' : ''}`);
-    console.log(`Author: ${tweet.author.displayName} (@${tweet.author.screenName})`);
-    console.log(`Posted At: ${tweet.postedAt}`);
-  }
-  
-  // chrome.runtime.sendMessageでMOCK_LOGメッセージを送信
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-    chrome.runtime.sendMessage({
-      type: 'MOCK_LOG',
-      data: {
-        tweets: tweets.map(t => ({
-          tweetId: t.tweetId,
-          url: t.url,
-          text: t.text.substring(0, 200), // 長いテキストは切り詰め
-          author: t.author,
-          postedAt: t.postedAt
-        }))
+async function sendTweetToNotionWithRetry(tweetData, config, retryCount = 0) {
+  try {
+    await sendTweetToNotion(tweetData, config);
+  } catch (error) {
+    // レート制限エラー（429）の場合は再試行
+    if (error.message && error.message.includes('レート制限エラー') && retryCount < MAX_RETRY_COUNT) {
+      // エラーメッセージから待機時間を抽出
+      const waitTimeMatch = error.message.match(/(\d+)ms/);
+      const waitTime = waitTimeMatch ? parseInt(waitTimeMatch[1], 10) : 1000;
+      
+      // 待機時間が有効な数値か確認
+      if (!isNaN(waitTime) && waitTime > 0) {
+        console.warn(`レート制限エラー: ${waitTime}ms待機後に再試行します (${retryCount + 1}/${MAX_RETRY_COUNT})`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        return sendTweetToNotionWithRetry(tweetData, config, retryCount + 1);
       }
-    }).catch(() => {
-      // エラーは無視（モックモードなので）
-    });
+    }
+    // 再試行できない場合はエラーをthrow
+    throw error;
   }
 }
 
@@ -396,16 +399,23 @@ async function sendTweetToNotion(tweetData, config) {
     if (!response.ok) {
       let errorMessage = `Notion APIエラー (${response.status})`;
       
-      // レスポンスボディをJSONとしてパースを試みる
+      // レスポンスボディを安全に読み込む（cloneしてから読み込む）
+      const responseClone = response.clone();
       try {
-        const errorJson = await response.json();
+        const errorJson = await responseClone.json();
         if (errorJson.message) {
           errorMessage = `Notion APIエラー (${response.status}): ${errorJson.message}`;
         }
       } catch {
-        // JSONパース失敗時はテキストとして取得
-        const errorText = await response.text();
-        errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, 200)}`;
+        // JSONパース失敗時はテキストとして取得（サイズ制限付き）
+        try {
+          const errorText = await response.text();
+          // エラーメッセージは最大200文字に制限
+          errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, 200)}`;
+        } catch {
+          // テキスト読み込みも失敗した場合はステータスコードのみ
+          errorMessage = `Notion APIエラー (${response.status})`;
+        }
       }
       
       // 認証エラー（401）の場合は全体を失敗としてthrow
@@ -416,7 +426,11 @@ async function sendTweetToNotion(tweetData, config) {
       // レート制限エラー（429）の特別処理
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
-        const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 1000;
+        // parseIntの安全性を向上（Number.parseIntを使用し、フォールバック値を設定）
+        const retryAfterSeconds = retryAfter ? Number.parseInt(retryAfter, 10) : null;
+        const waitTime = (retryAfterSeconds && !isNaN(retryAfterSeconds) && retryAfterSeconds > 0) 
+          ? retryAfterSeconds * 1000 
+          : 1000;
         throw new Error(`レート制限エラー: ${waitTime}ms後に再試行してください`);
       }
       
