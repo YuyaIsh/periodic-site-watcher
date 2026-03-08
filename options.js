@@ -122,6 +122,7 @@ async function loadSites() {
       </div>
       
       <div style="margin-top: 15px; display: flex; gap: 10px;">
+        <button class="save-site" data-site-id="${escapeHtml(siteId)}" style="background: #34a853;">保存</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="false">今すぐ実行</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="true" style="background: #ff9800;">今すぐ実行（モック）</button>
       </div>
@@ -166,12 +167,47 @@ async function loadSites() {
       });
     }
     
+    // 「保存」ボタンのイベントリスナーを設定
+    const saveButton = siteDiv.querySelector('.save-site');
+    if (saveButton) {
+      saveButton.addEventListener('click', async () => {
+        const siteId = saveButton.getAttribute('data-site-id');
+        await saveSite(siteId);
+      });
+    }
+    
     // 「今すぐ実行」ボタンのイベントリスナーを設定
     const runButtons = siteDiv.querySelectorAll('.run-now');
     runButtons.forEach(button => {
       button.addEventListener('click', async () => {
         const siteId = button.getAttribute('data-site-id');
         const mockMode = button.getAttribute('data-mock-mode') === 'true';
+        
+        // フォームから現在の値を読み取り、一時的に設定を更新
+        const urlInput = document.getElementById(`${siteId}-url`);
+        const url = urlInput ? urlInput.value.trim() : '';
+        
+        if (!url) {
+          alert(`サイト "${siteId}" のURLが入力されていません。URLを入力してから実行してください。`);
+          return;
+        }
+        
+        // URL形式の検証
+        try {
+          new URL(url);
+        } catch {
+          alert(`サイト "${siteId}" のURL形式が正しくありません。`);
+          return;
+        }
+        
+        // 一時的に設定を更新（実行時のみ使用）
+        const currentSettings = await chrome.storage.local.get('settings');
+        const settings = currentSettings.settings || { sites: {} };
+        if (!settings.sites[siteId]) {
+          settings.sites[siteId] = {};
+        }
+        settings.sites[siteId].url = url;
+        await chrome.storage.local.set({ settings });
         
         button.disabled = true;
         button.textContent = mockMode ? '実行中（モック）...' : '実行中...';
@@ -289,6 +325,130 @@ const DEFAULT_SITE = {
     minute: 0
   }
 };
+
+/**
+ * 指定されたサイトの設定を保存する
+ * 
+ * フォームから設定を読み取り、バリデーションを実施してからstorageに保存する。
+ * バリデーションエラーがある場合は保存せず、ユーザーに通知する。
+ * 
+ * 保存後、新規追加されたサイトのnextRunを初期化する。
+ * 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）。
+ * 
+ * @param {string} siteId - 保存対象のサイトID
+ */
+async function saveSite(siteId) {
+  const result = await chrome.storage.local.get('settings');
+  const settings = result.settings || { sites: {} };
+  
+  if (!settings.sites[siteId]) {
+    alert(`サイト "${siteId}" が見つかりません。`);
+    return;
+  }
+  
+  const enabled = document.getElementById(`${siteId}-enabled`).checked;
+  const url = document.getElementById(`${siteId}-url`).value.trim();
+  const timeoutSecValue = document.getElementById(`${siteId}-timeoutSec`).value;
+  const scheduleType = document.getElementById(`${siteId}-schedule-type`).value;
+  
+  // URLは必須（空文字列は無効）
+  if (!url) {
+    alert(`サイト "${siteId}" のURLが入力されていません。`);
+    return;
+  }
+  // URL形式の検証（URLコンストラクタで構文チェック）
+  try {
+    new URL(url);
+  } catch {
+    alert(`サイト "${siteId}" のURL形式が正しくありません。`);
+    return;
+  }
+  
+  // タイムアウトは1-300秒の範囲に制限
+  // 短すぎるとタイムアウトが頻発し、長すぎるとリソースを消費しすぎる
+  const timeoutSec = parseInt(timeoutSecValue, 10);
+  if (isNaN(timeoutSec) || timeoutSec < 1 || timeoutSec > 300) {
+    alert(`サイト "${siteId}" のタイムアウトは1-300秒の範囲で入力してください。`);
+    return;
+  }
+  
+  let schedule = { type: scheduleType };
+  
+  if (scheduleType === 'hourly') {
+    const minuteValue = document.getElementById(`${siteId}-schedule-minute`).value;
+    const minute = parseInt(minuteValue, 10);
+    if (isNaN(minute) || minute < 0 || minute > 59) {
+      alert(`サイト "${siteId}" の分は0-59の範囲で入力してください。`);
+      return;
+    }
+    schedule.minute = minute;
+  } else if (scheduleType === 'daily') {
+    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
+    if (!isValidTimeFormat(at)) {
+      alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
+      return;
+    }
+    schedule.at = at;
+  } else if (scheduleType === 'weekly') {
+    const dowValue = document.getElementById(`${siteId}-schedule-dow`).value;
+    const dow = parseInt(dowValue, 10);
+    if (isNaN(dow) || dow < 0 || dow > 6) {
+      alert(`サイト "${siteId}" の曜日が正しくありません。`);
+      return;
+    }
+    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
+    if (!isValidTimeFormat(at)) {
+      alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
+      return;
+    }
+    schedule.dow = dow;
+    schedule.at = at;
+  }
+  
+  const siteData = {
+    url,
+    enabled,
+    timeoutSec,
+    schedule
+  };
+  
+  // サイト単位オプション（スキーマで定義された項目）をフォームから読み取り保存
+  const schema = (window.__SITE_OPTIONS__ || {})[siteId];
+  if (schema && schema.length > 0) {
+    for (const opt of schema) {
+      const el = document.getElementById(`${siteId}-${opt.key}`);
+      if (el) {
+        const value = el.value.trim();
+        if (opt.type === 'url' && value && !isValidApiUrl(value)) {
+          alert(`サイト "${siteId}" の${opt.label}の形式が正しくありません。http:// または https:// で始まるURLを入力してください。`);
+          return;
+        }
+        siteData[opt.key] = value;
+      }
+    }
+  }
+  
+  settings.sites[siteId] = siteData;
+  await chrome.storage.local.set({ settings });
+  
+  // 新規追加されたサイトのnextRunを初期化
+  // 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）
+  let { state } = await chrome.storage.local.get('state');
+  const now = Date.now();
+  if (!state || !state.bySite) {
+    state = { bySite: {} };
+  }
+  
+  if (!state.bySite[siteId]) {
+    state.bySite[siteId] = {
+      nextRun: computeNextRunAfterSuccess(now, siteData.schedule)
+    };
+    await chrome.storage.local.set({ state });
+  }
+  
+  alert(`サイト "${siteId}" の設定を保存しました`);
+  await loadSites();
+}
 
 /**
  * すべてのサイト設定を保存する

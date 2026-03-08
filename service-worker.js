@@ -86,6 +86,17 @@ async function runSite(siteId, options = {}) {
   const now = Date.now();
   let tabId = null;
   
+  // URL検証をタブ作成前に実行（早期エラー検出）
+  const siteUrl = site.url || '';
+  if (siteUrl.startsWith('chrome-extension://') || 
+      siteUrl.startsWith('chrome://') || 
+      siteUrl.startsWith('edge://') ||
+      siteUrl.startsWith('about:') ||
+      siteUrl.startsWith('data:') ||
+      siteUrl.startsWith('javascript:')) {
+    throw new Error(`Invalid URL for content script injection: ${siteUrl}. Please use a valid HTTP/HTTPS URL.`);
+  }
+  
   try {
     const tab = await chrome.tabs.create({ url: site.url, active: false });
     tabId = tab.id;
@@ -116,8 +127,8 @@ async function runSite(siteId, options = {}) {
       
       // タブが既にcomplete状態の場合、onUpdatedが発火しないため
       // 明示的にチェックする必要がある
-      chrome.tabs.get(tabId).then(tab => {
-        if (tab.status === 'complete' && !resolved) {
+      chrome.tabs.get(tabId).then(tabInfo => {
+        if (tabInfo.status === 'complete' && !resolved) {
           resolved = true;
           clearTimeout(timeout);
           chrome.tabs.onUpdated.removeListener(listener);
@@ -127,6 +138,20 @@ async function runSite(siteId, options = {}) {
         // タブが既に閉じられている場合は無視（タイムアウトで処理される）
       });
     });
+    
+    // タブのURLを確認し、コンテンツスクリプトを注入可能かチェック
+    const currentTab = await chrome.tabs.get(tabId);
+    const tabUrl = currentTab.url || '';
+    
+    // 拡張機能URLやその他の許可されていないURLを除外
+    if (tabUrl.startsWith('chrome-extension://') || 
+        tabUrl.startsWith('chrome://') || 
+        tabUrl.startsWith('edge://') ||
+        tabUrl.startsWith('about:') ||
+        tabUrl.startsWith('data:') ||
+        tabUrl.startsWith('javascript:')) {
+      throw new Error(`Cannot inject content script into restricted URL: ${tabUrl}`);
+    }
     
     // Content Script注入とメッセージ送信は非同期に実行されるため、
     // リスナーを先に登録してから注入・送信を行う
@@ -167,6 +192,19 @@ async function runSite(siteId, options = {}) {
         const maxRetries = 5;
         const trySendMessage = () => {
           chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode })
+            .then((response) => {
+              // chrome.tabs.sendMessageのPromiseがresolveした場合、responseが返ってくる
+              // この場合、messageListenerは呼ばれないため、ここで処理する
+              if (response && response.type === 'COLLECT_RESULT' && !resolved) {
+                cleanup();
+                if (response.error) {
+                  reject(new Error(response.error));
+                } else {
+                  resolve(response.payload);
+                }
+              }
+              // responseがundefinedまたはCOLLECT_RESULTでない場合、messageListenerで処理される
+            })
             .catch((err) => {
               if (retries < maxRetries && !resolved) {
                 retries++;
