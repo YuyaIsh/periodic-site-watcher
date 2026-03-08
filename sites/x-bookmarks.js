@@ -10,7 +10,7 @@
  * @returns {Promise<Object>} 抽出したデータ（サイト別の形式）
  */
 async function collect_x_bookmarks() {
-  // Phase 1: ツイート抽出とモックモードログ出力のみ
+  // Phase 2: ツイート抽出とNotion API送信統合
   
   // 1. DOMから全ツイート要素を取得
   const tweetElements = extractTweetElements();
@@ -37,10 +37,11 @@ async function collect_x_bookmarks() {
     }
   }
   
-  // 3. 設定を取得（モックモード時は設定を取得しない）
+  // 3. 設定を取得（モックモード時も設定を取得するが、API Keyは不要）
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   let config = null;
   
+  // モックモード時は設定を取得しない（sendTweetToNotion内でモック処理）
   if (!mockMode) {
     // 通常モード: 設定を取得
     const result = await chrome.storage.local.get('settings');
@@ -60,25 +61,20 @@ async function collect_x_bookmarks() {
     };
   }
   
-  // 4. モックモード時はログ出力のみ、通常モード時はNotion APIに送信
-  if (mockMode) {
-    // モックモード: ログ出力のみ（設定は取得しない）
-    mockModeLogging(tweets, null);
-  } else {
-    // 通常モード: Notion APIに送信
-    for (const tweet of tweets) {
-      try {
-        await sendTweetToNotion(tweet, config);
-        // レート制限対応: 350ms待機
-        await new Promise(resolve => setTimeout(resolve, 350));
-      } catch (error) {
-        // 認証エラー（401）の場合は全体を失敗としてthrow
-        if (error.message && error.message.includes('認証エラー')) {
-          throw error;
-        }
-        // その他のエラーは個別ツイートをスキップして続行
-        console.warn('ツイート送信エラー:', error.message);
+  // 4. 各ツイートをNotion APIに送信（モックモード時もsendTweetToNotionを呼び出す）
+  for (const tweet of tweets) {
+    try {
+      // モックモード時はconfigがnullでもsendTweetToNotion内で処理される
+      await sendTweetToNotion(tweet, config);
+      // レート制限対応: 350ms待機
+      await new Promise(resolve => setTimeout(resolve, 350));
+    } catch (error) {
+      // 認証エラー（401）の場合は全体を失敗としてthrow
+      if (error.message && error.message.includes('認証エラー')) {
+        throw error;
       }
+      // その他のエラーは個別ツイートをスキップして続行
+      console.warn('ツイート送信エラー:', error.message);
     }
   }
   
