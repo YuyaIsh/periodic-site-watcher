@@ -20,12 +20,15 @@ async function collect_x_bookmarks() {
     return { tweets: [] };
   }
   
-  // 2. 各ツイートから基本情報を抽出
+  // 2. 各ツイートから基本情報を抽出（重複チェック付き）
   const tweets = [];
+  const seenTweetIds = new Set(); // 重複チェック用
+  
   for (const element of tweetElements) {
     try {
       const tweetData = extractTweetBasicData(element);
-      if (tweetData) {
+      if (tweetData && !seenTweetIds.has(tweetData.tweetId)) {
+        seenTweetIds.add(tweetData.tweetId);
         tweets.push(tweetData);
       }
     } catch (error) {
@@ -34,12 +37,12 @@ async function collect_x_bookmarks() {
     }
   }
   
-  // 3. 設定を取得（モックモード時はAPI KeyがなくてもOK）
+  // 3. 設定を取得（モックモード時は設定を取得しない）
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   let config = null;
   
   if (!mockMode) {
-    // 設定を取得
+    // 通常モード: 設定を取得
     const result = await chrome.storage.local.get('settings');
     const settings = result.settings || {};
     const siteSettings = settings.sites?.['x-bookmarks'] || {};
@@ -59,7 +62,7 @@ async function collect_x_bookmarks() {
   
   // 4. モックモード時はログ出力のみ、通常モード時はNotion APIに送信
   if (mockMode) {
-    // モックモード: ログ出力のみ
+    // モックモード: ログ出力のみ（設定は取得しない）
     mockModeLogging(tweets, null);
   } else {
     // 通常モード: Notion APIに送信
@@ -217,7 +220,22 @@ function extractAuthorInfo(tweetElement) {
  * @returns {string|null} スクリーンネーム（@を除く）
  */
 function extractScreenName(tweetElement) {
-  // @username形式のリンクから抽出
+  // User-Name要素内のリンクを優先的に検索（誤抽出を防止）
+  const userElement = tweetElement.querySelector('[data-testid="User-Name"]');
+  if (userElement) {
+    const link = userElement.querySelector('a[href^="/"]');
+    if (link) {
+      const href = link.getAttribute('href');
+      if (href) {
+        const match = href.match(/^\/([^\/]+)$/);
+        if (match && match[1] && !match[1].includes('status')) {
+          return match[1];
+        }
+      }
+    }
+  }
+  
+  // フォールバック: @username形式のリンクから抽出
   const links = tweetElement.querySelectorAll('a[href^="/"]');
   for (const link of links) {
     const href = link.getAttribute('href');
@@ -262,7 +280,11 @@ function extractPostedAt(tweetElement) {
   if (timeElement) {
     const datetime = timeElement.getAttribute('datetime');
     if (datetime) {
-      return datetime;
+      // 有効な日時か検証
+      const date = new Date(datetime);
+      if (!isNaN(date.getTime())) {
+        return datetime;
+      }
     }
   }
   // 日時が取得できない場合は現在時刻を使用
@@ -322,7 +344,7 @@ async function sendTweetToNotion(tweetData, config) {
   if (mockMode) {
     const mockConfig = {
       notionApiKey: '[REDACTED]',
-      notionDatabaseId: config?.notionDatabaseId || '[NOT SET]'
+      notionDatabaseId: '[MOCK_DATABASE_ID]'
     };
     
     const requestBody = buildNotionRequest(tweetData, mockConfig);
@@ -376,15 +398,34 @@ async function sendTweetToNotion(tweetData, config) {
     });
     
     if (!response.ok) {
-      const errorText = await response.text();
+      let errorMessage = `Notion APIエラー (${response.status})`;
+      
+      // レスポンスボディをJSONとしてパースを試みる
+      try {
+        const errorJson = await response.json();
+        if (errorJson.message) {
+          errorMessage = `Notion APIエラー (${response.status}): ${errorJson.message}`;
+        }
+      } catch {
+        // JSONパース失敗時はテキストとして取得
+        const errorText = await response.text();
+        errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, 200)}`;
+      }
       
       // 認証エラー（401）の場合は全体を失敗としてthrow
       if (response.status === 401) {
         throw new Error('認証エラー: Notion API Keyが無効です');
       }
       
-      // その他のAPIエラー（400, 429等）は個別ツイートをスキップ
-      throw new Error(`Notion APIエラー (${response.status}): ${errorText.substring(0, 200)}`);
+      // レート制限エラー（429）の特別処理
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 1000;
+        throw new Error(`レート制限エラー: ${waitTime}ms後に再試行してください`);
+      }
+      
+      // その他のAPIエラー（400等）は個別ツイートをスキップ
+      throw new Error(errorMessage);
     }
     
     // 成功
@@ -394,7 +435,16 @@ async function sendTweetToNotion(tweetData, config) {
     if (error.message && error.message.includes('認証エラー')) {
       throw error; // 認証エラーは再throw
     }
-    throw new Error(`ネットワークエラー: ${error.message}`);
+    
+    // エラータイプを判定して詳細なメッセージを生成
+    let errorMessage = 'ネットワークエラー';
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      errorMessage = 'ネットワーク接続エラー: インターネット接続を確認してください';
+    } else if (error.message) {
+      errorMessage = `ネットワークエラー: ${error.message}`;
+    }
+    
+    throw new Error(errorMessage);
   }
 }
 
