@@ -10,6 +10,11 @@ const NOTION_API_RATE_LIMIT_DELAY_MS = 350;
 const MAX_RETRY_COUNT = 3;
 
 /**
+ * 引用RTの最大再帰階層数（固定値）
+ */
+const MAX_QUOTE_DEPTH = 5;
+
+/**
  * サイト別データ抽出アダプタ関数
  * 
  * xのブックマークに追加されたものを取得
@@ -23,6 +28,7 @@ const MAX_RETRY_COUNT = 3;
 async function collect_x_bookmarks() {
   // Phase 2: ツイート抽出とNotion API送信統合
   // Phase 3: 引用RTの基本対応（URLとツイートIDのみ保存）
+  // Phase 4: 引用RTの再帰的取得
   
   // 1. DOMから全ツイート要素を取得
   const tweetElements = extractTweetElements();
@@ -33,12 +39,13 @@ async function collect_x_bookmarks() {
   }
   
   // 2. 各ツイートから基本情報を抽出（重複チェック付き）
+  // Phase 4: 引用RTの再帰的取得のために、ツイート要素のリストを渡す
   const tweets = [];
   const seenTweetIds = new Set(); // 重複チェック用
   
   for (const element of tweetElements) {
     try {
-      const tweetData = extractTweetBasicData(element);
+      const tweetData = extractTweetBasicData(element, tweetElements);
       if (tweetData && !seenTweetIds.has(tweetData.tweetId)) {
         seenTweetIds.add(tweetData.tweetId);
         tweets.push(tweetData);
@@ -107,9 +114,11 @@ function extractTweetElements() {
  * 各ツイートから基本情報を抽出する
  * 
  * @param {Element} tweetElement - ツイート要素（article[data-testid="tweet"]）
+ * @param {NodeListOf<Element>|Array<Element>} allTweetElements - 全ツイート要素のリスト（Phase 4: 引用RTの再帰的取得用）
+ * @param {number} quoteDepth - 現在の引用階層（デフォルト: 0）
  * @returns {Object|null} ツイートデータオブジェクト（抽出失敗時はnull）
  */
-function extractTweetBasicData(tweetElement) {
+function extractTweetBasicData(tweetElement, allTweetElements = null, quoteDepth = 0) {
   // 2.1 ツイートIDの抽出
   const tweetId = extractTweetId(tweetElement);
   if (!tweetId) {
@@ -128,8 +137,8 @@ function extractTweetBasicData(tweetElement) {
   // 2.5 投稿日時の抽出
   const postedAt = extractPostedAt(tweetElement);
   
-  // 2.6 引用RTの抽出（Phase 3）
-  const quotedTweet = extractQuotedTweet(tweetElement);
+  // 2.6 引用RTの抽出（Phase 4: 再帰的取得対応）
+  const quotedTweet = extractQuotedTweet(tweetElement, allTweetElements, quoteDepth);
   
   return {
     tweetId,
@@ -336,12 +345,14 @@ function buildTweetUrl(href, tweetId) {
 }
 
 /**
- * 引用RTを抽出する（Phase 3: 基本対応）
+ * 引用RTを抽出する（Phase 4: 再帰的取得対応）
  * 
  * @param {Element} tweetElement - ツイート要素
+ * @param {NodeListOf<Element>|Array<Element>|null} allTweetElements - 全ツイート要素のリスト（同じページ内検索用）
+ * @param {number} quoteDepth - 現在の引用階層（再帰制限用、デフォルト: 0）
  * @returns {Object|null} 引用RTデータオブジェクト（引用RTがない場合はnull）
  */
-function extractQuotedTweet(tweetElement) {
+function extractQuotedTweet(tweetElement, allTweetElements = null, quoteDepth = 0) {
   try {
     // 引用RTの判定: [data-testid="card.wrapper"]が存在する場合
     const cardWrapper = tweetElement.querySelector('[data-testid="card.wrapper"]');
@@ -366,6 +377,41 @@ function extractQuotedTweet(tweetElement) {
       const quotedTweetId = match[1];
       const quotedUrl = buildTweetUrl(href, quotedTweetId);
       
+      // Phase 4: 再帰的取得の実装
+      // 最大階層に達している場合は、URLとIDのみを返す
+      if (quoteDepth >= MAX_QUOTE_DEPTH) {
+        return {
+          tweetId: quotedTweetId,
+          url: quotedUrl
+        };
+      }
+      
+      // 同じページ内で元ツイートを検索
+      if (allTweetElements && allTweetElements.length > 0) {
+        const quotedTweetElement = findTweetElementById(allTweetElements, quotedTweetId);
+        
+        if (quotedTweetElement) {
+          // 見つかった場合は詳細情報を抽出（再帰的に）
+          const quotedTweetData = extractTweetBasicData(
+            quotedTweetElement, 
+            allTweetElements, 
+            quoteDepth + 1
+          );
+          
+          if (quotedTweetData) {
+            return {
+              tweetId: quotedTweetData.tweetId,
+              url: quotedTweetData.url,
+              text: quotedTweetData.text,
+              author: quotedTweetData.author,
+              postedAt: quotedTweetData.postedAt,
+              quotedTweet: quotedTweetData.quotedTweet // 再帰的に引用RTも取得
+            };
+          }
+        }
+      }
+      
+      // 見つからない場合は、Phase 3と同様にURLとIDのみを返す
       return {
         tweetId: quotedTweetId,
         url: quotedUrl
@@ -377,6 +423,23 @@ function extractQuotedTweet(tweetElement) {
     console.warn('引用RT抽出エラー:', error);
     return null; // エラー時は引用RTなしとして扱う
   }
+}
+
+/**
+ * ツイートIDからツイート要素を検索する
+ * 
+ * @param {NodeListOf<Element>|Array<Element>} tweetElements - 全ツイート要素のリスト
+ * @param {string} tweetId - 検索するツイートID
+ * @returns {Element|null} 見つかったツイート要素（見つからない場合はnull）
+ */
+function findTweetElementById(tweetElements, tweetId) {
+  for (const element of tweetElements) {
+    const elementTweetId = extractTweetId(element);
+    if (elementTweetId === tweetId) {
+      return element;
+    }
+  }
+  return null;
 }
 
 /**
@@ -546,29 +609,16 @@ async function sendTweetToNotion(tweetData, config) {
  * @returns {Object} Notion APIリクエストボディ
  */
 function buildNotionRequest(tweetData, config) {
-  // 引用RTデータのバリデーション
-  let quotedTweetBlock = null;
+  // 引用RTデータのバリデーションとブロック構築
+  const quotedTweetBlocks = [];
+  
   if (tweetData.quotedTweet) {
     if (tweetData.quotedTweet.url && tweetData.quotedTweet.tweetId) {
-      // Phase 3: 引用RTブロック（基本対応）
-      // URLをリンクとして表示
-      quotedTweetBlock = {
-        object: 'block',
-        type: 'quote',
-        quote: {
-          rich_text: [
-            {
-              type: 'text',
-              text: {
-                content: tweetData.quotedTweet.url,
-                link: {
-                  url: tweetData.quotedTweet.url
-                }
-              }
-            }
-          ]
-        }
-      };
+      // Phase 4: 引用RTブロック（再帰的取得対応）
+      const quoteBlock = buildQuotedTweetBlock(tweetData.quotedTweet);
+      if (quoteBlock) {
+        quotedTweetBlocks.push(quoteBlock);
+      }
     } else {
       console.warn('引用RTデータが不完全です:', tweetData.quotedTweet);
     }
@@ -610,9 +660,85 @@ function buildNotionRequest(tweetData, config) {
       }
     },
     children: [
-      // Phase 3: 引用RTブロック（基本対応）
-      ...(quotedTweetBlock ? [quotedTweetBlock] : []),
+      // Phase 4: 引用RTブロック（再帰的取得対応）
+      ...quotedTweetBlocks,
       // Phase 5で画像ブロックを追加
     ]
   };
+}
+
+/**
+ * 引用RTブロックを構築する（再帰的対応）
+ * 
+ * @param {Object} quotedTweet - 引用RTデータオブジェクト
+ * @returns {Object|null} Notion APIのquoteブロックオブジェクト（構築失敗時はnull）
+ */
+function buildQuotedTweetBlock(quotedTweet) {
+  if (!quotedTweet || !quotedTweet.url || !quotedTweet.tweetId) {
+    return null;
+  }
+  
+  const richText = [];
+  
+  // Phase 4: 詳細情報がある場合は表示
+  if (quotedTweet.text) {
+    // 引用RTの本文を追加
+    richText.push({
+      type: 'text',
+      text: {
+        content: quotedTweet.text
+      }
+    });
+    
+    // 改行を追加
+    richText.push({
+      type: 'text',
+      text: {
+        content: '\n'
+      }
+    });
+  }
+  
+  // 投稿者情報がある場合は追加
+  if (quotedTweet.author && quotedTweet.author.displayName) {
+    const authorText = quotedTweet.author.screenName 
+      ? `${quotedTweet.author.displayName} (@${quotedTweet.author.screenName})`
+      : quotedTweet.author.displayName;
+    
+    richText.push({
+      type: 'text',
+      text: {
+        content: `— ${authorText}\n`
+      }
+    });
+  }
+  
+  // URLをリンクとして追加
+  richText.push({
+    type: 'text',
+    text: {
+      content: quotedTweet.url,
+      link: {
+        url: quotedTweet.url
+      }
+    }
+  });
+  
+  const quoteBlock = {
+    object: 'block',
+    type: 'quote',
+    quote: {
+      rich_text: richText
+    }
+  };
+  
+  // Phase 4: 再帰的に引用RTがある場合は、子ブロックとして追加
+  if (quotedTweet.quotedTweet) {
+    const nestedQuoteBlock = buildQuotedTweetBlock(quotedTweet.quotedTweet);
+    if (nestedQuoteBlock) {
+      quoteBlock.children = [nestedQuoteBlock];
+    }
+  }
+  
+  return quoteBlock;
 }
