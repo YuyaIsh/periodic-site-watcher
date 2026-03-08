@@ -4,6 +4,22 @@
 // utils/validation.js と utils/schedule.js が先に読み込まれている必要がある
 
 /**
+ * 指定 siteId の sites/${siteId}.options.js を動的ロードする
+ *
+ * @param {string} siteId - サイトID
+ * @returns {Promise<void>} ロード完了（404の場合は onerror で resolve）
+ */
+function loadSiteOptionsScript(siteId) {
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('sites/' + siteId + '.options.js');
+    script.onload = () => resolve();
+    script.onerror = () => resolve();
+    document.head.appendChild(script);
+  });
+}
+
+/**
  * サイト一覧を読み込んで表示する
  * 
  * storageから設定と状態を取得し、各サイトの設定フォームと
@@ -76,6 +92,8 @@ async function loadSites() {
         ${renderScheduleFields(siteId, site.schedule)}
       </div>
       
+      <div class="site-options" id="${siteId}-site-options"></div>
+      
       <div class="state-display">
         <div class="state-item">
           <span class="state-label">次回実行:</span>
@@ -105,6 +123,27 @@ async function loadSites() {
     `;
     
     container.appendChild(siteDiv);
+    
+    // サイト単位オプションを動的ロードしてフォーム項目を追加
+    await loadSiteOptionsScript(siteId);
+    const schema = (window.__SITE_OPTIONS__ || {})[siteId];
+    if (schema && schema.length > 0) {
+      const optionsContainer = document.getElementById(`${siteId}-site-options`);
+      if (optionsContainer) {
+        for (const opt of schema) {
+          const inputId = `${siteId}-${opt.key}`;
+          const value = site[opt.key] || '';
+          const inputType = opt.type === 'password' ? 'password' : 'text';
+          const group = document.createElement('div');
+          group.className = 'form-group';
+          group.innerHTML = `
+            <label for="${escapeHtml(inputId)}">${escapeHtml(opt.label)}:</label>
+            <input type="${inputType}" id="${inputId}" value="${escapeHtml(value)}" ${opt.type === 'url' ? 'placeholder="https://..."' : ''}>
+          `;
+          optionsContainer.appendChild(group);
+        }
+      }
+    }
     
     // 削除ボタンのイベントリスナーを設定
     const deleteButton = siteDiv.querySelector('.delete');
@@ -295,12 +334,30 @@ async function saveAllSites() {
       schedule.at = at;
     }
     
-    settings.sites[siteId] = {
+    const siteData = {
       url,
       enabled,
       timeoutSec,
       schedule
     };
+    
+    // サイト単位オプション（スキーマで定義された項目）をフォームから読み取り保存
+    const schema = (window.__SITE_OPTIONS__ || {})[siteId];
+    if (schema && schema.length > 0) {
+      for (const opt of schema) {
+        const el = document.getElementById(`${siteId}-${opt.key}`);
+        if (el) {
+          const value = el.value.trim();
+          if (opt.type === 'url' && value && !isValidApiUrl(value)) {
+            alert(`サイト "${siteId}" の${opt.label}の形式が正しくありません。http:// または https:// で始まるURLを入力してください。`);
+            return;
+          }
+          siteData[opt.key] = value;
+        }
+      }
+    }
+    
+    settings.sites[siteId] = siteData;
   }
   
   await chrome.storage.local.set({ settings });
@@ -330,19 +387,19 @@ async function saveAllSites() {
 
 /**
  * 新規サイトを追加する
- * 
+ *
  * siteIdの重複チェックを行い、デフォルト設定で新規サイトを作成する。
  * 追加後は一覧を再読み込みして、新規サイトの設定フォームを表示する。
  */
 async function addNewSite() {
   const siteIdInput = document.getElementById('new-site-id');
   const siteId = siteIdInput.value.trim();
-  
+
   if (!siteId) {
     alert('Site IDを入力してください');
     return;
   }
-  
+
   const result = await chrome.storage.local.get('settings');
   const settings = result.settings || { sites: {} };
   
@@ -353,7 +410,7 @@ async function addNewSite() {
   
   settings.sites[siteId] = { ...DEFAULT_SITE };
   await chrome.storage.local.set({ settings });
-  
+
   siteIdInput.value = '';
   await loadSites();
 }

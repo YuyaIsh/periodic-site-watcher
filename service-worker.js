@@ -1,6 +1,10 @@
 // 共通ユーティリティを読み込む（Service WorkerではimportScriptsを使用）
 importScripts('utils/schedule.js', 'utils/validation.js');
 
+// siteId → スクリプトパスは規約で解決（sites/<siteId>.js、アンダースコアはハイフンに変換）
+// 共通API送信をスキップするサイト（content-script側で独自送信する場合）
+const SEND_API_FROM_PAGE = new Set(['moneyforward']);
+
 /**
  * Storageの初期化と整合性チェック
  * 
@@ -151,9 +155,12 @@ async function runSite(siteId) {
       
       chrome.runtime.onMessage.addListener(messageListener);
       
+      const scriptPath = 'sites/' + siteId.replace(/_/g, '-') + '.js';
+      const files = [scriptPath, 'content-script.js'];
+      
       chrome.scripting.executeScript({
         target: { tabId },
-        files: ['content-script.js']
+        files: files
       }).then(() => {
         // Content ScriptのonMessageリスナーが登録されるまでの時間差を考慮し、
         // 再試行ロジックで確実にメッセージを送信する
@@ -179,32 +186,36 @@ async function runSite(siteId) {
       
       // タイムアウトはsite.timeoutSecより5秒短く設定
       // （タブ読み込み待機時間を考慮し、全体のタイムアウトを超えないようにする）
+      // timeoutSec が 5 以下の場合は 0 にし、負数になる問題を防ぐ
       setTimeout(() => {
         if (!resolved) {
           cleanup();
           reject(new Error('Content script timeout'));
         }
-      }, (site.timeoutSec - 5) * 1000);
+      }, Math.max(0, (site.timeoutSec - 5) * 1000));
     });
     
-    const apiUrl = settings.apiUrl || 'http://localhost:3000/collect';
-    
-    // SSRF対策: プロトコルをhttp/httpsに制限
-    // 内部ネットワーク（file://, ftp://等）へのアクセスを防止
-    if (!isValidApiUrl(apiUrl)) {
-      throw new Error(`Invalid API URL format: ${apiUrl}`);
-    }
-    
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    
-    if (!response.ok) {
-      throw new Error(`API returned ${response.status}: ${response.statusText}`);
+    // SEND_API_FROM_PAGE のサイトは専用API送信をcontent-script側で行うため、共通API送信をスキップ
+    if (!SEND_API_FROM_PAGE.has(siteId)) {
+      const apiUrl = settings.apiUrl || 'http://localhost:3000/collect';
+      
+      // SSRF対策: プロトコルをhttp/httpsに制限
+      // 内部ネットワーク（file://, ftp://等）へのアクセスを防止
+      if (!isValidApiUrl(apiUrl)) {
+        throw new Error(`Invalid API URL format: ${apiUrl}`);
+      }
+      
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API returned ${response.status}: ${response.statusText}`);
+      }
     }
     
     const currentState = await chrome.storage.local.get('state');
