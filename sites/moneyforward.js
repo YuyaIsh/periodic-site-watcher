@@ -85,6 +85,19 @@ async function sendMfExpenseLogs(instrument, items) {
     items,
   };
 
+  // モックモードの場合は fetch せず console.log で出力
+  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
+  if (mockMode) {
+    console.log('[Mock] Would POST to', siteConfig.ifaApiUrl, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer [REDACTED]',
+      },
+      body: requestBody
+    });
+    return { result: 'ok', mock: true };
+  }
+
   const response = await fetch(siteConfig.ifaApiUrl, {
     method: 'POST',
     headers: {
@@ -190,10 +203,7 @@ async function collect_moneyforward() {
       usedOn: r.usedOn,
       amount: r.amount
     }));
-    try {
-      await sendMfExpenseLogs(instrument, apiItems);
-    } catch (err) {
-      console.error('MoneyForward API送信エラー:', cardType, err);
-    }
+    // 失敗時は throw して全体を失敗とする（共通 Slack 通知に載せるため）
+    await sendMfExpenseLogs(instrument, apiItems);
   }
 }

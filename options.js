@@ -32,10 +32,10 @@ async function loadSites() {
   const settings = result.settings || { sites: {} };
   const state = result.state || { bySite: {} };
   
-  // API URLを表示
-  const apiUrlInput = document.getElementById('api-url');
-  if (apiUrlInput) {
-    apiUrlInput.value = settings.apiUrl || 'http://localhost:3000/collect';
+  // Slack Webhook URLを表示
+  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
+  if (slackWebhookUrlInput) {
+    slackWebhookUrlInput.value = settings.slackWebhookUrl || '';
   }
   
   const container = document.getElementById('sites-container');
@@ -120,6 +120,11 @@ async function loadSites() {
           </div>
         ` : ''}
       </div>
+      
+      <div style="margin-top: 15px; display: flex; gap: 10px;">
+        <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="false">今すぐ実行</button>
+        <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="true" style="background: #ff9800;">今すぐ実行（モック）</button>
+      </div>
     `;
     
     container.appendChild(siteDiv);
@@ -160,6 +165,40 @@ async function loadSites() {
         updateScheduleFields(siteId);
       });
     }
+    
+    // 「今すぐ実行」ボタンのイベントリスナーを設定
+    const runButtons = siteDiv.querySelectorAll('.run-now');
+    runButtons.forEach(button => {
+      button.addEventListener('click', async () => {
+        const siteId = button.getAttribute('data-site-id');
+        const mockMode = button.getAttribute('data-mock-mode') === 'true';
+        
+        button.disabled = true;
+        button.textContent = mockMode ? '実行中（モック）...' : '実行中...';
+        
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: 'RUN_SITE',
+            siteId,
+            mockMode
+          });
+          
+          if (!response) {
+            alert('実行中にエラーが発生しました: Service Worker が応答しませんでした。');
+          } else if (response.success) {
+            alert(mockMode ? 'モック実行が完了しました。コンソールを確認してください。' : '実行が完了しました。');
+            await loadSites(); // 状態を更新
+          } else {
+            alert('実行中にエラーが発生しました: ' + (response.error || '不明なエラー'));
+          }
+        } catch (err) {
+          alert('実行中にエラーが発生しました: ' + err.message);
+        } finally {
+          button.disabled = false;
+          button.textContent = mockMode ? '今すぐ実行（モック）' : '今すぐ実行';
+        }
+      });
+    });
   }
 }
 
@@ -264,14 +303,23 @@ async function saveAllSites() {
   const result = await chrome.storage.local.get('settings');
   const settings = result.settings || { sites: {} };
   
-  const apiUrlInput = document.getElementById('api-url');
-  if (apiUrlInput) {
-    const apiUrl = apiUrlInput.value.trim() || 'http://localhost:3000/collect';
-    if (!isValidApiUrl(apiUrl)) {
-      alert('API URLの形式が正しくありません。http:// または https:// で始まるURLを入力してください。');
-      return;
+  // Slack Webhook URLを保存
+  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
+  if (slackWebhookUrlInput) {
+    const slackWebhookUrl = slackWebhookUrlInput.value.trim();
+    if (slackWebhookUrl) {
+      // URL形式の検証（空の場合は保存しない）
+      try {
+        new URL(slackWebhookUrl);
+        settings.slackWebhookUrl = slackWebhookUrl;
+      } catch {
+        alert('Slack Webhook URLの形式が正しくありません。');
+        return;
+      }
+    } else {
+      // 空の場合は削除
+      delete settings.slackWebhookUrl;
     }
-    settings.apiUrl = apiUrl;
   }
   
   for (const siteId of Object.keys(settings.sites)) {

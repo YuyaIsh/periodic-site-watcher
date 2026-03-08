@@ -1,9 +1,5 @@
 // 共通ユーティリティを読み込む（Service WorkerではimportScriptsを使用）
-importScripts('utils/schedule.js', 'utils/validation.js');
-
-// siteId → スクリプトパスは規約で解決（sites/<siteId>.js、アンダースコアはハイフンに変換）
-// 共通API送信をスキップするサイト（content-script側で独自送信する場合）
-const SEND_API_FROM_PAGE = new Set(['moneyforward']);
+importScripts('utils/schedule.js', 'utils/validation.js', 'utils/slack.js');
 
 /**
  * Storageの初期化と整合性チェック
@@ -58,14 +54,17 @@ async function initializeStorage() {
  * 1. タブ作成（非アクティブで開く）
  * 2. 読み込み完了待機（timeoutSecで打ち切り）
  * 3. Content Script注入とデータ抽出
- * 4. API送信（Service Workerが実施）
+ * 4. API送信（Service Workerが実施、またはcontent-script側で実施）
  * 5. state更新（成功/失敗に応じて）
  * 6. タブクローズ（finallyで確実に実行）
  * 
  * @param {string} siteId - 処理対象のサイトID
+ * @param {Object} options - 実行オプション
+ * @param {boolean} options.mockMode - モックモード（trueの場合、fetchを実行せずconsole.logで出力）
  */
-async function runSite(siteId) {
-  const { settings, _ } = await chrome.storage.local.get(['settings', 'state']);
+async function runSite(siteId, options = {}) {
+  const { mockMode = false } = options;
+  const { settings } = await chrome.storage.local.get('settings');
   const site = settings.sites[siteId];
   if (!site) {
     console.error(`Site ${siteId} not found in settings`);
@@ -167,7 +166,7 @@ async function runSite(siteId) {
         let retries = 0;
         const maxRetries = 5;
         const trySendMessage = () => {
-          chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId })
+          chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode })
             .catch((err) => {
               if (retries < maxRetries && !resolved) {
                 retries++;
@@ -195,9 +194,9 @@ async function runSite(siteId) {
       }, Math.max(0, (site.timeoutSec - 5) * 1000));
     });
     
-    // SEND_API_FROM_PAGE のサイトは専用API送信をcontent-script側で行うため、共通API送信をスキップ
-    if (!SEND_API_FROM_PAGE.has(siteId)) {
-      const apiUrl = settings.apiUrl || 'http://localhost:3000/collect';
+    // site.apiUrl が存在する場合、Service Worker が送信を担当
+    if (site.apiUrl && site.apiUrl.trim()) {
+      const apiUrl = site.apiUrl.trim();
       
       // SSRF対策: プロトコルをhttp/httpsに制限
       // 内部ネットワーク（file://, ftp://等）へのアクセスを防止
@@ -205,18 +204,23 @@ async function runSite(siteId) {
         throw new Error(`Invalid API URL format: ${apiUrl}`);
       }
       
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}: ${response.statusText}`);
+      if (mockMode) {
+        console.log('[Mock] Would POST to', apiUrl, payload);
+      } else {
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+          throw new Error(`API returned ${response.status}: ${response.statusText}`);
+        }
       }
     }
+    // site.apiUrl が存在しない場合は、content-script 側で送信を担当（moneyforward など）
     
     const currentState = await chrome.storage.local.get('state');
     currentState.state.bySite[siteId] = {
@@ -241,14 +245,25 @@ async function runSite(siteId) {
     errorMessage = errorMessage.replace(/password|token|secret|key|api[_-]?key/gi, '[REDACTED]');
     errorMessage = errorMessage.substring(0, 100);
     
+    const failCount = (currentSiteState.failCount || 0) + 1;
+    
     currentState.state.bySite[siteId] = {
       nextRun: computeNextRunAfterFail(now),
       lastStatus: 'fail',
-      failCount: (currentSiteState.failCount || 0) + 1,
+      failCount: failCount,
       lastRun: now,
       lastError: errorMessage
     };
     await chrome.storage.local.set({ state: currentState.state });
+    
+    // Slack 通知（設定されていれば）
+    if (settings?.slackWebhookUrl) {
+      await notifySlackOnFailure(settings.slackWebhookUrl, {
+        siteId,
+        error: errorMessage,
+        failCount
+      });
+    }
   } finally {
     // タブは必ず閉じる（finallyで確実に実行）
     // タブが既に閉じられている場合のエラーは無視
@@ -339,6 +354,21 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'hourly-check') {
     onAlarm();
+  }
+});
+
+// オプション画面からの「今すぐ実行」メッセージを受信
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'RUN_SITE') {
+    (async () => {
+      try {
+        await runSite(message.siteId, { mockMode: message.mockMode || false });
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true; // 非同期応答を保持
   }
 });
 

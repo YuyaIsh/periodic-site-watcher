@@ -33,12 +33,19 @@ async function collectOnPage(siteId) {
 // return trueで非同期応答を保持（sendResponseが非同期で呼ばれる場合に必要）
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'COLLECT') {
+    // mockMode をグローバル変数に一時格納（collect 関数が参照できるように）
+    if (message.mockMode !== undefined) {
+      window.__COLLECT_MOCK_MODE__ = message.mockMode;
+    }
     (async () => {
       try {
         const result = await collectOnPage(message.siteId);
         sendResponse({ type: 'COLLECT_RESULT', payload: result });
       } catch (error) {
         sendResponse({ type: 'COLLECT_RESULT', error: error.message });
+      } finally {
+        // クリーンアップ
+        delete window.__COLLECT_MOCK_MODE__;
       }
     })();
     return true;
