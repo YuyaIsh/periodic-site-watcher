@@ -20,6 +20,11 @@ const MAX_QUOTE_DEPTH = 5;
 const TWITTER_MEDIA_URL_PREFIX = 'https://pbs.twimg.com/media/';
 
 /**
+ * エラーメッセージの最大文字数
+ */
+const MAX_ERROR_MESSAGE_LENGTH = 200;
+
+/**
  * サイト別データ抽出アダプタ関数
  * 
  * xのブックマークに追加されたものを取得
@@ -476,12 +481,16 @@ function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, pro
         
         if (quotedTweetElement) {
           try {
+            // 循環参照検出のため、quotedTweetIdをprocessedIdsに追加した新しいSetを作成
+            const currentProcessedIds = new Set(processedIds);
+            currentProcessedIds.add(quotedTweetId);
+            
             // 見つかった場合は詳細情報を抽出（再帰的に）
             const quotedTweetData = extractTweetBasicData(
               quotedTweetElement, 
               tweetIdMap, 
               quoteDepth + 1,
-              processedIds
+              currentProcessedIds
             );
             
             if (quotedTweetData) {
@@ -630,9 +639,9 @@ async function sendTweetToNotion(tweetData, config) {
       } catch {
         // JSONパース失敗時はテキストとして取得（サイズ制限付き）
         try {
-          const errorText = await response.text();
-          // エラーメッセージは最大200文字に制限
-          errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, 200)}`;
+          const errorText = await responseClone.text();
+          // エラーメッセージは最大文字数に制限
+          errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, MAX_ERROR_MESSAGE_LENGTH)}`;
         } catch {
           // テキスト読み込みも失敗した場合はステータスコードのみ
           errorMessage = `Notion APIエラー (${response.status})`;
