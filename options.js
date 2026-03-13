@@ -11,8 +11,9 @@
  */
 function loadSiteOptionsScript(siteId) {
   return new Promise((resolve) => {
+    const scriptPath = 'sites/' + siteId + '.options.js';
     const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('sites/' + siteId + '.options.js');
+    script.src = chrome.runtime.getURL(scriptPath);
     script.onload = () => resolve();
     script.onerror = () => resolve();
     document.head.appendChild(script);

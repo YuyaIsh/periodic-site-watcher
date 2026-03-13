@@ -179,7 +179,7 @@ async function runSite(siteId, options = {}) {
       
       chrome.runtime.onMessage.addListener(messageListener);
       
-      const scriptPath = 'sites/' + siteId.replace(/_/g, '-') + '.js';
+      const scriptPath = 'sites/' + siteId + '.js';
       const files = [scriptPath, 'content-script.js'];
       
       chrome.scripting.executeScript({

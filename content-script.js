@@ -15,7 +15,9 @@
  * @throws {Error} 未対応のsiteIdの場合
  */
 async function collectOnPage(siteId) {
-  const fnName = 'collect_' + siteId;
+  // siteIdから関数名への変換: ハイフンをアンダースコアに変換
+  // 例: x-bookmarks -> collect_x_bookmarks
+  const fnName = 'collect_' + siteId.replace(/-/g, '_');
   const fn = typeof window[fnName] === 'function' ? window[fnName] : null;
   if (!fn) {
     throw new Error(`Unsupported siteId: ${siteId} (${fnName} not found)`);

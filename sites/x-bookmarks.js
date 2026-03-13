@@ -35,16 +35,62 @@ const MAX_ERROR_MESSAGE_LENGTH = 200;
  * 
  * @returns {Promise<Object>} 抽出したデータ（サイト別の形式）
  */
+/** ツイート要素の出現待ちタイムアウト（ミリ秒） */
+const TWEET_WAIT_TIMEOUT_MS = 10000;
+
+/**
+ * ツイート要素がDOMに出現するまで待機する（SPAの非同期読み込み対応）
+ * @returns {Promise<NodeListOf<Element>>}
+ */
+function waitForTweetElements() {
+  return new Promise((resolve) => {
+    const existing = document.querySelectorAll('article[data-testid="tweet"]');
+    if (existing.length > 0) {
+      resolve(existing);
+      return;
+    }
+    const observer = new MutationObserver(() => {
+      const els = document.querySelectorAll('article[data-testid="tweet"]');
+      if (els.length > 0) {
+        observer.disconnect();
+        resolve(els);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => {
+      observer.disconnect();
+      resolve(document.querySelectorAll('article[data-testid="tweet"]'));
+    }, TWEET_WAIT_TIMEOUT_MS);
+  });
+}
+
 async function collect_x_bookmarks() {
   // Phase 2: ツイート抽出とNotion API送信統合
   // Phase 3: 引用RTの基本対応（URLとツイートIDのみ保存）
   // Phase 4: 引用RTの再帰的取得
   
-  // 1. DOMから全ツイート要素を取得
-  const tweetElements = extractTweetElements();
+  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
+  
+  // 1. ツイート要素の出現を待ってから取得（Twitter/XはSPAのため非同期でDOMが構築される）
+  const tweetElements = await waitForTweetElements();
   
   if (tweetElements.length === 0) {
-    console.warn('ツイート要素が見つかりませんでした');
+    // モックモード時: ツイートがなくてもリクエスト形式を表示
+    if (mockMode) {
+      const mockLog = {
+        url: 'https://api.notion.com/v1/pages',
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer [REDACTED]', 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' },
+        body: null,
+        note: 'ツイート要素が見つかりませんでした（タイムアウトまたはブックマークが空）'
+      };
+      console.log('[Mock] Would POST to', mockLog.url, mockLog);
+      try {
+        chrome.runtime.sendMessage({ type: 'MOCK_LOG', message: `[Mock] Would POST to ${mockLog.url}`, data: { notionRequest: mockLog } }).catch(() => {});
+      } catch (e) {}
+    } else {
+      console.warn('ツイート要素が見つかりませんでした');
+    }
     return { tweets: [] };
   }
   
@@ -76,7 +122,6 @@ async function collect_x_bookmarks() {
   }
   
   // 4. 設定を取得（モックモード時は設定を取得しない）
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   let config = null;
   
   if (!mockMode) {
@@ -567,6 +612,7 @@ async function sendTweetToNotionWithRetry(tweetData, config, retryCount = 0) {
  * @returns {Promise<void>} 成功時はresolve、エラー時はthrow
  */
 async function sendTweetToNotion(tweetData, config) {
+  // モックモードの判定
   const mockMode = window.__COLLECT_MOCK_MODE__ === true;
   
   // モックモード時はAPI Keyがなくてもコンソール表示まで実行
@@ -578,34 +624,37 @@ async function sendTweetToNotion(tweetData, config) {
     
     const requestBody = buildNotionRequest(tweetData, mockConfig);
     
-    console.log('=== モックモード: Notion API送信内容 ===');
-    console.log('URL: https://api.notion.com/v1/pages');
-    console.log('Method: POST');
-    console.log('Headers:', {
-      'Authorization': 'Bearer [REDACTED]',
-      'Notion-Version': '2022-06-28',
-      'Content-Type': 'application/json'
-    });
-    console.log('Body:', JSON.stringify(requestBody, null, 2));
+    const mockLog = {
+      url: 'https://api.notion.com/v1/pages',
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer [REDACTED]',
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json'
+      },
+      body: requestBody
+    };
     
-    // chrome.runtime.sendMessageでMOCK_LOGメッセージを送信
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    // Content Script のコンソールにも出力（moneyforward.jsと同じ形式）
+    console.log('[Mock] Would POST to', mockLog.url, mockLog);
+    
+    // Service Worker のコンソールにも出力されるようにメッセージを送信
+    try {
       chrome.runtime.sendMessage({
         type: 'MOCK_LOG',
+        message: `[Mock] Would POST to ${mockLog.url}`,
         data: {
-          notionRequest: {
-            url: 'https://api.notion.com/v1/pages',
-            method: 'POST',
-            body: requestBody
-          }
+          notionRequest: mockLog
         }
       }).catch(() => {
-        // エラーは無視
+        // Service Worker が応答しない場合（通常の実行時など）は無視
       });
+    } catch (e) {
+      // メッセージ送信に失敗した場合は無視
     }
     
     // モックモード時はエラーをthrowしない
-    return Promise.resolve({ result: 'ok', mock: true });
+    return;
   }
   
   // 通常モード: 実際にNotion APIに送信
