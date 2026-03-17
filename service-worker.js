@@ -45,6 +45,59 @@ async function initializeStorage() {
 }
 
 /**
+ * MoneyForward の batches を IFA API へ送信する
+ * （Content Script では CORS で fetch できないため Service Worker で実行）
+ *
+ * @param {Object} site - サイト設定（ifaApiUrl, ifaApiKey 必須）
+ * @param {Array<{instrument: Object, items: Array}>} batches - 送信するバッチ配列
+ * @param {boolean} mockMode - true の場合は fetch せず console.log のみ
+ * @throws {Error} 設定不足または API エラー時
+ */
+async function sendMoneyforwardBatches(site, batches, mockMode) {
+  const apiUrl = (site.ifaApiUrl || '').trim();
+  const apiKey = site.ifaApiKey || '';
+  if (!apiUrl) {
+    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
+  }
+  if (!apiKey) {
+    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+  }
+  if (!isValidApiUrl(apiUrl)) {
+    throw new Error(`Invalid IFA API URL format: ${apiUrl}`);
+  }
+  if (mockMode) {
+    for (const batch of batches) {
+      console.log('[Mock] Would POST to', apiUrl, batch);
+    }
+    return;
+  }
+  for (const batch of batches) {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(batch)
+    });
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'レスポンス取得失敗');
+      if (response.status === 401) {
+        throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+      }
+      if (response.status === 400) {
+        throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
+      }
+      throw new Error(`IFA APIエラー: ${errorText} (${response.status})`);
+    }
+    const result = await response.json();
+    if (result?.result === 'partial') {
+      console.warn('IFA API: 部分的に処理されました', result);
+    }
+  }
+}
+
+/**
  * 1サイトの巡回処理を実行する
  * 
  * 設計書の「共通骨格」に従い、タブは毎回新規作成して処理後に必ず閉じる。
@@ -169,6 +222,9 @@ async function runSite(siteId, options = {}) {
         if (sender.tab?.id === tabId && message.type === 'COLLECT_RESULT' && !resolved) {
           cleanup();
           if (message.error) {
+            // #region agent log
+            fetch('http://127.0.0.1:7246/ingest/5589c68a-9b2d-4dd1-b897-9a40c75ce2d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad54d'},body:JSON.stringify({sessionId:'8ad54d',location:'service-worker.js:messageListener',message:'COLLECT_RESULT error via onMessage',data:{error:message.error,siteId},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+            // #endregion
             reject(new Error(message.error));
           } else {
             resolve(message.payload);
@@ -198,6 +254,9 @@ async function runSite(siteId, options = {}) {
               if (response && response.type === 'COLLECT_RESULT' && !resolved) {
                 cleanup();
                 if (response.error) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7246/ingest/5589c68a-9b2d-4dd1-b897-9a40c75ce2d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad54d'},body:JSON.stringify({sessionId:'8ad54d',location:'service-worker.js:trySendMessage',message:'COLLECT_RESULT error via sendResponse',data:{error:response.error,siteId},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+                  // #endregion
                   reject(new Error(response.error));
                 } else {
                   resolve(response.payload);
@@ -237,7 +296,6 @@ async function runSite(siteId, options = {}) {
       const apiUrl = site.apiUrl.trim();
       
       // SSRF対策: プロトコルをhttp/httpsに制限
-      // 内部ネットワーク（file://, ftp://等）へのアクセスを防止
       if (!isValidApiUrl(apiUrl)) {
         throw new Error(`Invalid API URL format: ${apiUrl}`);
       }
@@ -258,7 +316,10 @@ async function runSite(siteId, options = {}) {
         }
       }
     }
-    // site.apiUrl が存在しない場合は、content-script 側で送信を担当（moneyforward など）
+    // moneyforward: payload.batches を ifaApiUrl へ送信（Content Script では CORS で fetch できないため）
+    else if (siteId === 'moneyforward' && payload?.payload?.batches?.length) {
+      await sendMoneyforwardBatches(site, payload.payload.batches, mockMode);
+    }
     
     const currentState = await chrome.storage.local.get('state');
     currentState.state.bySite[siteId] = {
@@ -399,6 +460,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'MOCK_LOG') {
     console.log(message.message, message.data);
+    return false;
+  }
+  if (message.type === 'DEBUG_LOG') {
+    fetch('http://127.0.0.1:7246/ingest/5589c68a-9b2d-4dd1-b897-9a40c75ce2d9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ad54d'},body:JSON.stringify({...message.payload,timestamp:message.payload?.timestamp||Date.now()})}).catch(()=>{});
     return false;
   }
 });

@@ -62,87 +62,16 @@ function extractTableData() {
 }
 
 /**
- * MoneyForward明細をAPIに送信する
+ * batches を構築するヘルパー（API送信はService Workerで実行する）
+ * Content Scriptはページコンテキストで動作するため、別オリジンへのfetchがCORSでブロックされる。
+ * そのためデータ抽出のみ行い、実際のAPI送信はService Workerに委譲する。
  *
  * @param {Object} instrument - 支払い手段情報
- * @param {string} instrument.instrumentName - 支払い手段名
- * @param {string} instrument.instrumentType - 'CREDIT_CARD' | 'BANK_ACCOUNT' | 'CASH'
  * @param {Array} items - 明細データ配列
- * @returns {Promise<Object>} APIレスポンス
- * @throws {Error} 設定がない場合、またはAPIエラー時
+ * @returns {{instrument: Object, items: Array}} リクエストボディ
  */
-async function sendMfExpenseLogs(instrument, items) {
-  const { settings } = await chrome.storage.local.get('settings');
-  const siteConfig = settings?.sites?.['moneyforward'];
-
-  const requestBody = {
-    instrument,
-    items,
-  };
-
-  // モックモードの場合は fetch せず console.log で出力
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
-  if (mockMode) {
-    const mockLog = {
-      url: siteConfig?.ifaApiUrl || '(URL未設定)',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer [REDACTED]',
-      },
-      body: requestBody
-    };
-    // Content Script のコンソールにも出力
-    console.log('[Mock] Would POST to', mockLog.url, mockLog);
-    // Service Worker のコンソールにも出力されるようにメッセージを送信
-    try {
-      chrome.runtime.sendMessage({
-        type: 'MOCK_LOG',
-        message: `[Mock] Would POST to ${mockLog.url}`,
-        data: mockLog
-      }).catch(() => {
-        // Service Worker が応答しない場合（通常の実行時など）は無視
-      });
-    } catch (e) {
-      // メッセージ送信に失敗した場合は無視
-    }
-    return { result: 'ok', mock: true };
-  }
-
-  // モックモードでない場合のみ環境変数をチェック
-  if (!siteConfig?.ifaApiUrl) {
-    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
-  }
-  if (!siteConfig?.ifaApiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
-  }
-
-  const response = await fetch(siteConfig.ifaApiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${siteConfig.ifaApiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => 'レスポンス取得失敗');
-    if (response.status === 401) {
-      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
-    }
-    if (response.status === 400) {
-      throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
-    }
-    throw new Error(`IFA APIエラー: ${errorText} (${response.status})`);
-  }
-
-  const result = await response.json();
-
-  if (result.result === 'partial') {
-    console.warn('IFA API: 部分的に処理されました', result);
-  }
-
-  return result;
+function buildMfExpenseBatch(instrument, items) {
+  return { instrument, items };
 }
 
 async function collect_moneyforward() {
@@ -211,6 +140,7 @@ async function collect_moneyforward() {
     byCardType[ct].push(row);
   }
 
+  const batches = [];
   for (const [cardType, items] of Object.entries(byCardType)) {
     const instrument = {
       instrumentName: 'MF:' + cardType,
@@ -221,7 +151,8 @@ async function collect_moneyforward() {
       usedOn: r.usedOn,
       amount: r.amount
     }));
-    // 失敗時は throw して全体を失敗とする（共通 Slack 通知に載せるため）
-    await sendMfExpenseLogs(instrument, apiItems);
+    batches.push(buildMfExpenseBatch(instrument, apiItems));
   }
+
+  return { batches };
 }
