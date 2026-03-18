@@ -6,6 +6,12 @@
  */
 
 const MF_MONTHS_TO_FETCH = 2; // 当月 + 前月の2ヶ月分
+/**
+ * 対象とする最小年月（この月を含む）
+ * - 取得対象: 表示月が `MF_MIN_YEARMONTH` 以上（例: 2026-02 なら 2026-02, 2026-03, ...）
+ * - 取得しない: 表示月が `MF_MIN_YEARMONTH` 未満（例: 2026-01, 2025-12, ...）
+ */
+const MF_MIN_YEARMONTH = '2026-02';
 
 function normalizeCardType(dataOriginalTitle) {
   if (!dataOriginalTitle || dataOriginalTitle.trim() === '') {
@@ -74,6 +80,21 @@ function buildMfExpenseBatch(instrument, items) {
   return { instrument, items };
 }
 
+/**
+ * .fc-header-title h2 の表示（例: "2026/01/01 - 2026/01/31"）から表示中の年月を取得する
+ * @returns {string|null} "YYYY-MM" または取得できない場合は null
+ */
+function getDisplayedYearMonth() {
+  const headerTitle = document.querySelector('.fc-header-title h2');
+  if (!headerTitle) return null;
+  const text = (headerTitle.textContent || '').trim();
+  const startPart = text.split(/\s+-\s+/)[0];
+  if (!startPart) return null;
+  const ymd = startPart.replace(/\//g, '-');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  return ymd.slice(0, 7);
+}
+
 async function collect_moneyforward() {
   const TABLE_UPDATE_TIMEOUT_MS = 10000;
 
@@ -112,23 +133,34 @@ async function collect_moneyforward() {
 
   btnToday.click();
   await waitForTableUpdate();
-  const currentData = extractTableData();
-  for (const row of currentData) {
-    if (!seenIds.has(row.id)) {
-      seenIds.add(row.id);
-      allRows.push(row);
+  const currentYearMonth = getDisplayedYearMonth();
+  // 表示月が `MF_MIN_YEARMONTH` 以上（含む）のときだけその月を取得する
+  if (currentYearMonth != null && currentYearMonth >= MF_MIN_YEARMONTH) {
+    const currentData = extractTableData();
+    for (const row of currentData) {
+      if (!seenIds.has(row.id)) {
+        seenIds.add(row.id);
+        allRows.push(row);
+      }
     }
+  } else if (currentYearMonth != null) {
+    console.log('MoneyForward: 表示月が対象外のため取得をスキップ', { 表示月: currentYearMonth, 最小対象: MF_MIN_YEARMONTH });
   }
 
   for (let i = 0; i < MF_MONTHS_TO_FETCH - 1; i++) {
     btnPrev.click();
     await waitForTableUpdate();
-    const monthData = extractTableData();
-    for (const row of monthData) {
-      if (!seenIds.has(row.id)) {
-        seenIds.add(row.id);
-        allRows.push(row);
+    const displayedYearMonth = getDisplayedYearMonth();
+    if (displayedYearMonth != null && displayedYearMonth >= MF_MIN_YEARMONTH) {
+      const monthData = extractTableData();
+      for (const row of monthData) {
+        if (!seenIds.has(row.id)) {
+          seenIds.add(row.id);
+          allRows.push(row);
+        }
       }
+    } else if (displayedYearMonth != null) {
+      console.log('MoneyForward: 表示月が対象外のため取得をスキップ', { 表示月: displayedYearMonth, 最小対象: MF_MIN_YEARMONTH });
     }
   }
 
