@@ -21,6 +21,19 @@
   },
   "action": {
     "default_title": "定期巡回サイトウォッチャー"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.rakuten-card.co.jp/*",
+        "*://login.account.rakuten.com/*",
+        "*://eu.login.account.rakuten.com/*"
+      ],
+      "js": [
+        "sites/rakuten-card-alert-suppress.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
 }
 
