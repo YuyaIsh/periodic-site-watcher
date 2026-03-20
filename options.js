@@ -52,16 +52,18 @@ async function loadSites() {
     const site = settings.sites[siteId];
     const siteState = state.bySite[siteId] || {};
     
-    const siteDiv = document.createElement('div');
+    const siteDiv = document.createElement('details');
     siteDiv.className = 'site-section';
     siteDiv.id = `site-${siteId}`;
+    // デフォルトは閉じた状態（open属性なし）
     
     siteDiv.innerHTML = `
-      <div class="site-header">
+      <summary class="site-header">
         <h2>${escapeHtml(siteId)}</h2>
         <button class="delete" data-site-id="${escapeHtml(siteId)}">削除</button>
-      </div>
+      </summary>
       
+      <div class="site-accordion-body">
       <div class="form-group">
         <label>
           <input type="checkbox" id="${siteId}-enabled" ${site.enabled ? 'checked' : ''}>
@@ -126,6 +128,7 @@ async function loadSites() {
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="false">今すぐ実行</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="true" style="background: #ff9800;">今すぐ実行（モック）</button>
       </div>
+      </div>
     `;
     
     container.appendChild(siteDiv);
@@ -151,10 +154,11 @@ async function loadSites() {
       }
     }
     
-    // 削除ボタンのイベントリスナーを設定
+    // 削除ボタンのイベントリスナーを設定（summary内のためstopPropagationでパネル開閉を防止）
     const deleteButton = siteDiv.querySelector('.delete');
     if (deleteButton) {
-      deleteButton.addEventListener('click', () => {
+      deleteButton.addEventListener('click', (e) => {
+        e.stopPropagation();
         deleteSite(siteId);
       });
     }

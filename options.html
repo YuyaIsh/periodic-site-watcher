@@ -22,13 +22,48 @@
       margin-bottom: 20px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .site-header {
+    /* details/summary アコーディオン用（#sites-container 内のサイト単位のみ） */
+    #sites-container details.site-section {
+      padding: 0;
+    }
+    #sites-container details.site-section summary.site-header {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      margin-bottom: 15px;
-      padding-bottom: 15px;
-      border-bottom: 1px solid #eee;
+      gap: 10px;
+      padding: 15px 20px;
+      cursor: pointer;
+      list-style: none;
+      -webkit-details-marker: none;
+      user-select: none;
+    }
+    #sites-container details.site-section summary.site-header h2 {
+      margin: 0;
+      flex: 1;
+    }
+    #sites-container details.site-section summary.site-header::-webkit-details-marker {
+      display: none;
+    }
+    #sites-container details.site-section summary.site-header::before {
+      content: '';
+      width: 0;
+      height: 0;
+      margin-right: 8px;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid #666;
+      transition: transform 0.2s ease;
+      flex-shrink: 0;
+    }
+    #sites-container details.site-section[open] summary.site-header::before {
+      transform: rotate(180deg);
+    }
+    #sites-container details.site-section summary.site-header:focus-visible {
+      outline: 2px solid #4285f4;
+      outline-offset: 2px;
+    }
+    #sites-container .site-accordion-body {
+      padding: 20px;
+      border-top: 1px solid #eee;
     }
     .form-group {
       margin-bottom: 15px;
