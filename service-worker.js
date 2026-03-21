@@ -857,6 +857,19 @@ async function runSite(siteId, options = {}) {
     })();
     console.log(`${meta} 成功${countSummary}`);
 
+    if (settings?.slackWebhookUrl && (siteId === 'rakuten-card' || siteId === 'moneyforward')) {
+      const p = payload?.payload;
+      let zeroItemsTotal = null;
+      if (siteId === 'moneyforward' && Array.isArray(p?.batches)) {
+        zeroItemsTotal = p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+      } else if (siteId === 'rakuten-card' && Array.isArray(p?.items)) {
+        zeroItemsTotal = p.items.length;
+      }
+      if (zeroItemsTotal === 0) {
+        await notifySlackOnZeroItems(settings.slackWebhookUrl, { siteId });
+      }
+    }
+
   } catch (error) {
     console.warn(`${meta} 失敗:`, error.message || String(error));
     
