@@ -8,6 +8,7 @@
   g.__SITE_OPTIONS__['rakuten-card'] = [
     { key: 'householdApiUrl', label: 'Household API URL', type: 'url' },
     { key: 'householdApiKey', label: 'Household API Key', type: 'password' },
+    { key: 'householdApiKeyLocal', label: 'Household API Key（ローカル手動・任意）', type: 'password' },
     { key: 'loginPassword', label: 'ログインパスワード', type: 'password' }
   ];
 })(typeof window !== 'undefined' ? window : self);

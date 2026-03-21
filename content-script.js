@@ -37,6 +37,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.mockMode !== undefined) {
       window.__COLLECT_MOCK_MODE__ = message.mockMode;
     }
+    if (message.localMode !== undefined) {
+      window.__COLLECT_LOCAL_MODE__ = message.localMode;
+    }
     (async () => {
       try {
         const result = await collectOnPage(message.siteId);
@@ -46,6 +49,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } finally {
         // クリーンアップ
         delete window.__COLLECT_MOCK_MODE__;
+        delete window.__COLLECT_LOCAL_MODE__;
       }
     })();
     return true;

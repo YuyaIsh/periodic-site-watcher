@@ -127,6 +127,7 @@ async function loadSites() {
         <button class="save-site" data-site-id="${escapeHtml(siteId)}" style="background: #34a853;">保存</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="false">今すぐ実行</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="true" style="background: #ff9800;">今すぐ実行（モック）</button>
+        <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-local-mode="true" style="background: #7b1fa2;">今すぐ実行（ローカル）</button>
       </div>
       </div>
     `;
@@ -185,7 +186,8 @@ async function loadSites() {
     runButtons.forEach(button => {
       button.addEventListener('click', async () => {
         const siteId = button.getAttribute('data-site-id');
-        const mockMode = button.getAttribute('data-mock-mode') === 'true';
+        const localMode = button.getAttribute('data-local-mode') === 'true';
+        const mockMode = !localMode && button.getAttribute('data-mock-mode') === 'true';
         
         // フォームから現在の値を読み取り、一時的に設定を更新
         const urlInput = document.getElementById(`${siteId}-url`);
@@ -213,20 +215,30 @@ async function loadSites() {
         settings.sites[siteId].url = url;
         await chrome.storage.local.set({ settings });
         
+        const defaultLabel = button.getAttribute('data-mock-mode') === 'true'
+          ? '今すぐ実行（モック）'
+          : (button.getAttribute('data-local-mode') === 'true' ? '今すぐ実行（ローカル）' : '今すぐ実行');
         button.disabled = true;
-        button.textContent = mockMode ? '実行中（モック）...' : '実行中...';
+        button.textContent = localMode ? '実行中（ローカル）...' : (mockMode ? '実行中（モック）...' : '実行中...');
         
         try {
           const response = await chrome.runtime.sendMessage({
             type: 'RUN_SITE',
             siteId,
-            mockMode
+            mockMode: localMode ? false : mockMode,
+            localMode: localMode ? true : false
           });
           
           if (!response) {
             alert('実行中にエラーが発生しました: Service Worker が応答しませんでした。');
           } else if (response.success) {
-            alert(mockMode ? 'モック実行が完了しました。コンソールを確認してください。' : '実行が完了しました。');
+            if (localMode) {
+              alert('ローカル実行が完了しました。');
+            } else if (mockMode) {
+              alert('モック実行が完了しました。コンソールを確認してください。');
+            } else {
+              alert('実行が完了しました。');
+            }
             await loadSites(); // 状態を更新
           } else {
             alert('実行中にエラーが発生しました: ' + (response.error || '不明なエラー'));
@@ -235,7 +247,7 @@ async function loadSites() {
           alert('実行中にエラーが発生しました: ' + err.message);
         } finally {
           button.disabled = false;
-          button.textContent = mockMode ? '今すぐ実行（モック）' : '今すぐ実行';
+          button.textContent = defaultLabel;
         }
       });
     });

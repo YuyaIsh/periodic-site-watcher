@@ -2,6 +2,8 @@
  * Notion APIのレート制限対応待機時間（ミリ秒）
  * Notion APIのレート制限は3リクエスト/秒のため、350ms待機
  */
+const LOG_PREFIX = '[サイト巡回]';
+const SITE_ID = 'x-bookmarks';
 const NOTION_API_RATE_LIMIT_DELAY_MS = 350;
 
 /**
@@ -36,15 +38,18 @@ const MAX_ERROR_MESSAGE_LENGTH = 200;
  * @returns {Promise<Object>} 抽出したデータ（サイト別の形式）
  */
 async function collect_x_bookmarks() {
+  console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
+
   // Phase 2: ツイート抽出とNotion API送信統合
   // Phase 3: 引用RTの基本対応（URLとツイートIDのみ保存）
   // Phase 4: 引用RTの再帰的取得
-  
+
   // 1. DOMから全ツイート要素を取得
   const tweetElements = extractTweetElements();
-  
+
   if (tweetElements.length === 0) {
-    console.warn('ツイート要素が見つかりませんでした');
+    console.warn(`${LOG_PREFIX} ${SITE_ID} ツイート要素が見つかりませんでした`);
+    console.log(`${LOG_PREFIX} ${SITE_ID} 完了 件数=0`);
     return { tweets: [] };
   }
   
@@ -70,16 +75,16 @@ async function collect_x_bookmarks() {
         tweets.push(tweetData);
       }
     } catch (error) {
-      console.warn('ツイート抽出エラー:', error);
+      console.warn(`${LOG_PREFIX} ${SITE_ID} ツイート抽出エラー:`, error);
       // 個別ツイートのエラーはスキップして続行
     }
   }
   
-  // 4. 設定を取得（モックモード時は設定を取得しない）
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
+  // 4. 設定を取得（モック／ローカル手動時は設定を取得しない）
+  const mockLike = window.__COLLECT_MOCK_MODE__ === true || window.__COLLECT_LOCAL_MODE__ === true;
   let config = null;
   
-  if (!mockMode) {
+  if (!mockLike) {
     // 通常モード: 設定を取得
     const result = await chrome.storage.local.get('settings');
     const settings = result.settings || {};
@@ -113,10 +118,13 @@ async function collect_x_bookmarks() {
         throw error;
       }
       // その他のエラーは個別ツイートをスキップして続行
-      console.warn('ツイート送信エラー:', error.message);
+      console.warn(`${LOG_PREFIX} ${SITE_ID} ツイート送信エラー:`, error.message);
     }
   }
-  
+
+  const mockLabel = (typeof window !== 'undefined' && window.__COLLECT_MOCK_MODE__) ? ' モック' : ((typeof window !== 'undefined' && window.__COLLECT_LOCAL_MODE__) ? ' ローカル' : '');
+  console.log(`${LOG_PREFIX} ${SITE_ID} 完了 件数=${tweets.length}${mockLabel}`);
+
   return { tweets };
 }
 
@@ -459,7 +467,7 @@ function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, pro
       
       // 循環参照検出: 既に処理中のツイートIDの場合はURLとIDのみを返す
       if (processedIds.has(quotedTweetId)) {
-        console.warn(`循環参照を検出しました: ツイートID ${quotedTweetId}`);
+        console.warn(`${LOG_PREFIX} ${SITE_ID} 循環参照を検出: ツイートID ${quotedTweetId}`);
         return {
           tweetId: quotedTweetId,
           url: quotedUrl
@@ -504,7 +512,7 @@ function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, pro
               };
             }
           } catch (error) {
-            console.warn('引用RTの詳細情報抽出エラー:', error);
+            console.warn(`${LOG_PREFIX} ${SITE_ID} 引用RT詳細抽出エラー:`, error);
             // エラー時はURLとIDのみを返す
             return {
               tweetId: quotedTweetId,
@@ -523,7 +531,7 @@ function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, pro
     
     return null;
   } catch (error) {
-    console.warn('引用RT抽出エラー:', error);
+    console.warn(`${LOG_PREFIX} ${SITE_ID} 引用RT抽出エラー:`, error);
     return null; // エラー時は引用RTなしとして扱う
   }
 }
@@ -549,7 +557,7 @@ async function sendTweetToNotionWithRetry(tweetData, config, retryCount = 0) {
       
       // 待機時間が有効な数値か確認
       if (!isNaN(waitTime) && waitTime > 0) {
-        console.warn(`レート制限エラー: ${waitTime}ms待機後に再試行します (${retryCount + 1}/${MAX_RETRY_COUNT})`);
+        console.warn(`${LOG_PREFIX} ${SITE_ID} レート制限: ${waitTime}ms待機後に再試行 (${retryCount + 1}/${MAX_RETRY_COUNT})`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
         return sendTweetToNotionWithRetry(tweetData, config, retryCount + 1);
       }
@@ -567,7 +575,7 @@ async function sendTweetToNotionWithRetry(tweetData, config, retryCount = 0) {
  * @returns {Promise<void>} 成功時はresolve、エラー時はthrow
  */
 async function sendTweetToNotion(tweetData, config) {
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
+  const mockMode = window.__COLLECT_MOCK_MODE__ === true || window.__COLLECT_LOCAL_MODE__ === true;
   
   // モックモード時はAPI Keyがなくてもコンソール表示まで実行
   if (mockMode) {
@@ -592,6 +600,7 @@ async function sendTweetToNotion(tweetData, config) {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: 'MOCK_LOG',
+        message: 'x-bookmarks Notion',
         data: {
           notionRequest: {
             url: 'https://api.notion.com/v1/pages',
@@ -707,7 +716,7 @@ function buildNotionRequest(tweetData, config) {
         quotedTweetBlocks.push(quoteBlock);
       }
     } else {
-      console.warn('引用RTデータが不完全です:', tweetData.quotedTweet);
+      console.warn(`${LOG_PREFIX} ${SITE_ID} 引用RTデータが不完全:`, tweetData.quotedTweet);
     }
   }
   

@@ -4,6 +4,8 @@
  * 複数月の遷移と API 送信は Service Worker 側で行う。
  */
 
+const LOG_PREFIX = '[サイト巡回]';
+const SITE_ID = 'rakuten-card';
 const RC_MIN_YEARMONTH = '2026-02';
 
 /**
@@ -136,15 +138,22 @@ function extractStatementItems() {
 }
 
 async function collect_rakuten_card() {
+  console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
+
   const displayedYearMonth = getDisplayedYearMonth();
 
   let items = [];
   if (displayedYearMonth != null && displayedYearMonth >= RC_MIN_YEARMONTH) {
     items = extractStatementItems();
+  } else if (displayedYearMonth != null) {
+    console.log(`${LOG_PREFIX} ${SITE_ID} 表示月が対象外のためスキップ 表示月=${displayedYearMonth}`);
   }
 
   const prevEl = document.querySelector('.stmt-head-calendar__prev');
   const prevMonthHref = prevEl ? prevEl.getAttribute('href') : null;
+
+  const mockLabel = (typeof window !== 'undefined' && window.__COLLECT_MOCK_MODE__) ? ' モック' : ((typeof window !== 'undefined' && window.__COLLECT_LOCAL_MODE__) ? ' ローカル' : '');
+  console.log(`${LOG_PREFIX} ${SITE_ID} 完了 件数=${items.length} 表示月=${displayedYearMonth ?? '-'}${mockLabel}`);
 
   return {
     items: items,

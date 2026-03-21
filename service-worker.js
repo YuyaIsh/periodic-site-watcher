@@ -1,6 +1,23 @@
 // 共通ユーティリティを読み込む（Service WorkerではimportScriptsを使用）
 importScripts('utils/schedule.js', 'utils/validation.js', 'utils/slack.js');
 
+/** ログ出力の統一プレフィックス（SW・sites/共通で利用） */
+const LOG_PREFIX = '[サイト巡回]';
+
+/**
+ * サイト巡回ログ用のメタ情報行を組み立てる
+ * @param {string} siteId - サイトID
+ * @param {'schedule'|'manual'} invokedBy - 起動経路（省略時は 'schedule'）
+ * @param {boolean} mockMode - モックモード
+ * @param {boolean} localMode - ローカル手動（localMode時はmockModeはfalse扱い）
+ * @returns {string} ログ用の識別行（例: "[サイト巡回] moneyforward (スケジュール/モック)"）
+ */
+function formatSiteLogMeta(siteId, invokedBy, mockMode, localMode) {
+  const invoked = invokedBy === 'manual' ? '手動' : 'スケジュール';
+  const mode = localMode ? 'ローカル' : (mockMode ? 'モック' : '通常');
+  return `${LOG_PREFIX} ${siteId} (${invoked}/${mode})`;
+}
+
 /**
  * Storageの初期化と整合性チェック
  * 
@@ -174,19 +191,21 @@ const RC_MIN_YEARMONTH = '2026-02';
 /**
  * 楽天カード明細を household-statement-import へ送信する
  *
- * @param {Object} site - householdApiUrl, householdApiKey 必須
+ * @param {string} siteId - サイトID（ログ用）
+ * @param {Object} site - householdApiUrl, householdApiKey 必須（localMode 時は householdApiKeyLocal があればそちらを Bearer に使う）
  * @param {Array<Object>} items - 送信する明細
  * @param {boolean} mockMode
+ * @param {boolean} localMode
  * @throws {Error}
  */
-async function sendRakutenCardHouseholdImport(site, items, mockMode) {
+async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, localMode) {
   const apiUrl = (site.householdApiUrl || '').trim();
-  const apiKey = site.householdApiKey || '';
+  const apiKey = localMode && (site.householdApiKeyLocal || '').trim()
+    ? (site.householdApiKeyLocal || '').trim()
+    : (site.householdApiKey || '');
 
   if (mockMode) {
-    const body = { items };
-    console.log('[Mock] POST', apiUrl || '(householdApiUrl 未設定)');
-    console.log('[Mock] Request body:', JSON.stringify(body, null, 2));
+    console.log(`${LOG_PREFIX} [モック] ${siteId} household POST ${apiUrl || '(未設定)'} 件数=${items?.length ?? 0}`);
     return;
   }
 
@@ -199,7 +218,11 @@ async function sendRakutenCardHouseholdImport(site, items, mockMode) {
   if (!isValidApiUrl(apiUrl)) {
     throw new Error(`Invalid Household API URL format: ${apiUrl}`);
   }
-  const response = await fetch(apiUrl, {
+  let postUrl = apiUrl;
+  if (localMode) {
+    postUrl = resolveLocalApiUrl(apiUrl);
+  }
+  const response = await fetch(postUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -279,9 +302,10 @@ function createRakutenLoginWait(tabId, timeoutSec) {
  * @param {string} siteId
  * @param {Object} site
  * @param {boolean} mockMode
+ * @param {boolean} localMode
  * @returns {Promise<Object>}
  */
-function collectRakutenCardPage(tabId, siteId, site, mockMode) {
+function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
   return new Promise((resolve, reject) => {
     let resolved = false;
 
@@ -315,7 +339,7 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode) {
       let retries = 0;
       const maxRetries = 40;
       const trySendMessage = () => {
-        chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode })
+        chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
           .then((response) => {
             if (response && response.type === 'COLLECT_RESULT' && !resolved) {
               cleanup();
@@ -356,9 +380,10 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode) {
  * @param {string} siteId
  * @param {number} tabId
  * @param {boolean} mockMode
+ * @param {boolean} localMode
  * @returns {Promise<Object>}
  */
-async function runRakutenCardFlow(site, siteId, tabId, mockMode) {
+async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
   const { promise: loginPromise, cancel: cancelLoginWait } = createRakutenLoginWait(
     tabId,
     site.timeoutSec
@@ -395,7 +420,7 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode) {
 
   for (let i = 0; i < RC_MONTHS_TO_FETCH; i++) {
     await waitForRakutenStatementDom(tabId, site.timeoutSec);
-    const pagePayload = await collectRakutenCardPage(tabId, siteId, site, mockMode);
+    const pagePayload = await collectRakutenCardPage(tabId, siteId, site, mockMode, localMode);
     lastPayload = pagePayload;
     const inner = pagePayload.payload;
     if (inner.items && inner.items.length) {
@@ -430,14 +455,18 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode) {
  * MoneyForward の batches を IFA API へ送信する
  * （Content Script では CORS で fetch できないため Service Worker で実行）
  *
- * @param {Object} site - サイト設定（ifaApiUrl, ifaApiKey 必須）
+ * @param {string} siteId - サイトID（ログ用）
+ * @param {Object} site - サイト設定（ifaApiUrl, ifaApiKey 必須。localMode 時は ifaApiKeyLocal があればそちらを Bearer に使う）
  * @param {Array<{instrument: Object, items: Array}>} batches - 送信するバッチ配列
  * @param {boolean} mockMode - true の場合は fetch せず console.log のみ
+ * @param {boolean} localMode
  * @throws {Error} 設定不足または API エラー時
  */
-async function sendMoneyforwardBatches(site, batches, mockMode) {
+async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMode) {
   const apiUrl = (site.ifaApiUrl || '').trim();
-  const apiKey = site.ifaApiKey || '';
+  const apiKey = localMode && (site.ifaApiKeyLocal || '').trim()
+    ? (site.ifaApiKeyLocal || '').trim()
+    : (site.ifaApiKey || '');
   if (!apiUrl) {
     throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
   }
@@ -448,13 +477,16 @@ async function sendMoneyforwardBatches(site, batches, mockMode) {
     throw new Error(`Invalid IFA API URL format: ${apiUrl}`);
   }
   if (mockMode) {
-    for (const batch of batches) {
-      console.log('[Mock] Would POST to', apiUrl, batch);
-    }
+    const totalItems = batches?.reduce((sum, b) => sum + (b?.items?.length ?? 0), 0) ?? 0;
+    console.log(`${LOG_PREFIX} [モック] ${siteId} IFA POST バッチ=${batches?.length ?? 0} 件数=${totalItems}`);
     return;
   }
+  let postUrl = apiUrl;
+  if (localMode) {
+    postUrl = resolveLocalApiUrl(apiUrl);
+  }
   for (const batch of batches) {
-    const response = await fetch(apiUrl, {
+    const response = await fetch(postUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -495,14 +527,18 @@ async function sendMoneyforwardBatches(site, batches, mockMode) {
  * 
  * @param {string} siteId - 処理対象のサイトID
  * @param {Object} options - 実行オプション
+ * @param {'schedule'|'manual'} [options.invokedBy] - 起動経路（省略時は 'schedule'）
  * @param {boolean} options.mockMode - モックモード（trueの場合、fetchを実行せずconsole.logで出力）
+ * @param {boolean} [options.localMode] - ローカル手動実行（true のとき mockMode は無視され false 扱い）
  */
 async function runSite(siteId, options = {}) {
-  const { mockMode = false } = options;
+  const invokedBy = options.invokedBy === 'manual' ? 'manual' : 'schedule';
+  const localMode = options.localMode === true;
+  const mockMode = localMode ? false : (options.mockMode === true);
   const { settings } = await chrome.storage.local.get('settings');
   const site = settings.sites[siteId];
   if (!site) {
-    console.error(`Site ${siteId} not found in settings`);
+    console.warn(`${LOG_PREFIX} ${siteId} 失敗: 設定にサイトが存在しません`);
     // 設定不整合をエラーとして扱い、次回リトライをスケジュール
     const now = Date.now();
     const currentState = await chrome.storage.local.get('state');
@@ -517,22 +553,24 @@ async function runSite(siteId, options = {}) {
     await chrome.storage.local.set({ state: currentState.state });
     return;
   }
-  
+
+  const meta = formatSiteLogMeta(siteId, invokedBy, mockMode, localMode);
   const now = Date.now();
   let tabId = null;
-  
-  // URL検証をタブ作成前に実行（早期エラー検出）
-  const siteUrl = site.url || '';
-  if (siteUrl.startsWith('chrome-extension://') || 
-      siteUrl.startsWith('chrome://') || 
-      siteUrl.startsWith('edge://') ||
-      siteUrl.startsWith('about:') ||
-      siteUrl.startsWith('data:') ||
-      siteUrl.startsWith('javascript:')) {
-    throw new Error(`Invalid URL for content script injection: ${siteUrl}. Please use a valid HTTP/HTTPS URL.`);
-  }
-  
+
   try {
+    // URL検証を try 内で実行（catch で捕捉するため）
+    const siteUrl = site.url || '';
+    if (siteUrl.startsWith('chrome-extension://') ||
+        siteUrl.startsWith('chrome://') ||
+        siteUrl.startsWith('edge://') ||
+        siteUrl.startsWith('about:') ||
+        siteUrl.startsWith('data:') ||
+        siteUrl.startsWith('javascript:')) {
+      throw new Error(`Invalid URL for content script injection: ${siteUrl}. Please use a valid HTTP/HTTPS URL.`);
+    }
+
+    console.log(`${meta} 開始`);
     const tab = await chrome.tabs.create({ url: site.url, active: false });
     tabId = tab.id;
     
@@ -556,7 +594,7 @@ async function runSite(siteId, options = {}) {
     // リスナーを先に登録してから注入・送信を行う
     let payload;
     if (siteId === 'rakuten-card') {
-      payload = await runRakutenCardFlow(site, siteId, tabId, mockMode);
+      payload = await runRakutenCardFlow(site, siteId, tabId, mockMode, localMode);
     } else {
       payload = await new Promise((resolve, reject) => {
       let resolved = false;
@@ -597,7 +635,7 @@ async function runSite(siteId, options = {}) {
         let retries = 0;
         const maxRetries = 5;
         const trySendMessage = () => {
-          chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode })
+          chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
             .then((response) => {
               // chrome.tabs.sendMessageのPromiseがresolveした場合、responseが返ってくる
               // この場合、messageListenerは呼ばれないため、ここで処理する
@@ -652,9 +690,13 @@ async function runSite(siteId, options = {}) {
       }
       
       if (mockMode) {
-        console.log('[Mock] Would POST to', apiUrl, payload);
+        console.log(`${LOG_PREFIX} [モック] ${siteId} 汎用API POST ${apiUrl}`);
       } else {
-        const response = await fetch(apiUrl, {
+        let postUrl = apiUrl;
+        if (localMode) {
+          postUrl = resolveLocalApiUrl(apiUrl);
+        }
+        const response = await fetch(postUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -669,11 +711,11 @@ async function runSite(siteId, options = {}) {
     }
     // moneyforward: payload.batches を ifaApiUrl へ送信（Content Script では CORS で fetch できないため）
     else if (siteId === 'moneyforward' && payload?.payload?.batches?.length) {
-      await sendMoneyforwardBatches(site, payload.payload.batches, mockMode);
+      await sendMoneyforwardBatches(siteId, site, payload.payload.batches, mockMode, localMode);
     }
     // rakuten-card: household-statement-import へ items を送信
     else if (siteId === 'rakuten-card' && payload?.payload?.items?.length) {
-      await sendRakutenCardHouseholdImport(site, payload.payload.items, mockMode);
+      await sendRakutenCardHouseholdImport(siteId, site, payload.payload.items, mockMode, localMode);
     }
     
     const currentState = await chrome.storage.local.get('state');
@@ -684,11 +726,26 @@ async function runSite(siteId, options = {}) {
       lastRun: now
     };
     await chrome.storage.local.set({ state: currentState.state });
-    
-    console.log(`Site ${siteId} processed successfully`);
-    
+
+    const countSummary = (() => {
+      const p = payload?.payload;
+      if (!p) return '';
+      if (siteId === 'moneyforward' && Array.isArray(p.batches)) {
+        const n = p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+        return ` ${n}件取得`;
+      }
+      if (siteId === 'rakuten-card' && Array.isArray(p.items)) {
+        return ` ${p.items.length}件取得`;
+      }
+      if (siteId === 'x-bookmarks' && Array.isArray(p.tweets)) {
+        return ` ${p.tweets.length}件取得`;
+      }
+      return '';
+    })();
+    console.log(`${meta} 成功${countSummary}`);
+
   } catch (error) {
-    console.error(`Error processing site ${siteId}:`, error);
+    console.warn(`${meta} 失敗:`, error.message || String(error));
     
     const currentState = await chrome.storage.local.get('state');
     const currentSiteState = currentState.state.bySite[siteId] || {};
@@ -744,27 +801,25 @@ async function runSite(siteId, options = {}) {
  * PCスリープ等で遅れても、次回起床で実行可能になる。
  */
 async function onAlarm() {
-  console.log('Alarm triggered, checking sites...');
-  
+  console.log(`${LOG_PREFIX} スケジュールチェック開始`);
+
   const { settings, state } = await initializeStorage();
   const now = Date.now();
-  
+
   // 実行順序を固定するため、siteIdでソート
-  const siteIds = Object.keys(settings.sites).sort();
-  
-  for (const siteId of siteIds) {
+  const allSiteIds = Object.keys(settings.sites).sort();
+  const toRun = [];
+  for (const siteId of allSiteIds) {
     const site = settings.sites[siteId];
     const siteState = state.bySite[siteId];
-    
-    if (!site.enabled) {
-      continue;
-    }
-    
-    // not-before方式: nextRunが未来なら実行しない
-    if (siteState && siteState.nextRun > now) {
-      continue;
-    }
-    
+    if (!site?.enabled) continue;
+    if (siteState && siteState.nextRun > now) continue;
+    toRun.push(siteId);
+  }
+
+  console.log(`${LOG_PREFIX} 実行対象: ${toRun.length ? toRun.join(', ') : '該当なし'}`);
+
+  for (const siteId of toRun) {
     await runSite(siteId);
   }
 }
@@ -814,7 +869,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Content Script からのモックログメッセージを受信
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'MOCK_LOG') {
-    console.log(message.message, message.data);
+    const msg = message.message != null ? String(message.message) : '';
+    const data = message.data != null ? message.data : {};
+    console.log(`${LOG_PREFIX} [モック] ${msg}`, data);
     return false;
   }
   if (message.type === 'DEBUG_LOG') {
@@ -828,7 +885,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'RUN_SITE') {
     (async () => {
       try {
-        await runSite(message.siteId, { mockMode: message.mockMode || false });
+        await runSite(message.siteId, {
+          invokedBy: 'manual',
+          mockMode: message.mockMode || false,
+          localMode: message.localMode === true
+        });
         sendResponse({ success: true });
       } catch (error) {
         sendResponse({ success: false, error: error.message });

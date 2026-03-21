@@ -5,6 +5,8 @@
  * API側の処理: externalIdで照合して保存されていないもののみ追加する。
  */
 
+const LOG_PREFIX = '[サイト巡回]';
+const SITE_ID = 'moneyforward';
 const MF_MONTHS_TO_FETCH = 2; // 当月 + 前月の2ヶ月分
 /**
  * 対象とする最小年月（この月を含む）
@@ -58,7 +60,7 @@ function extractTableData() {
     const dataOriginalTitle = noteTd?.getAttribute('data-original-title') || '';
     const cardType = normalizeCardType(dataOriginalTitle);
     if (cardType === null && dataOriginalTitle) {
-      console.warn('Unknown card type, skipping:', dataOriginalTitle);
+      console.warn(`${LOG_PREFIX} ${SITE_ID} 不明なカード種別をスキップ:`, dataOriginalTitle);
       continue;
     }
     if (cardType === null) continue;
@@ -96,6 +98,8 @@ function getDisplayedYearMonth() {
 }
 
 async function collect_moneyforward() {
+  console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
+
   const TABLE_UPDATE_TIMEOUT_MS = 10000;
 
   function waitForTableUpdate() {
@@ -144,7 +148,7 @@ async function collect_moneyforward() {
       }
     }
   } else if (currentYearMonth != null) {
-    console.log('MoneyForward: 表示月が対象外のため取得をスキップ', { 表示月: currentYearMonth, 最小対象: MF_MIN_YEARMONTH });
+    console.log(`${LOG_PREFIX} ${SITE_ID} 表示月が対象外のためスキップ`, { 表示月: currentYearMonth, 最小対象: MF_MIN_YEARMONTH });
   }
 
   for (let i = 0; i < MF_MONTHS_TO_FETCH - 1; i++) {
@@ -160,7 +164,7 @@ async function collect_moneyforward() {
         }
       }
     } else if (displayedYearMonth != null) {
-      console.log('MoneyForward: 表示月が対象外のため取得をスキップ', { 表示月: displayedYearMonth, 最小対象: MF_MIN_YEARMONTH });
+      console.log(`${LOG_PREFIX} ${SITE_ID} 表示月が対象外のためスキップ`, { 表示月: displayedYearMonth, 最小対象: MF_MIN_YEARMONTH });
     }
   }
 
@@ -185,6 +189,10 @@ async function collect_moneyforward() {
     }));
     batches.push(buildMfExpenseBatch(instrument, apiItems));
   }
+
+  const mockLabel = (typeof window !== 'undefined' && window.__COLLECT_MOCK_MODE__) ? ' モック' : ((typeof window !== 'undefined' && window.__COLLECT_LOCAL_MODE__) ? ' ローカル' : '');
+  const totalItems = batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+  console.log(`${LOG_PREFIX} ${SITE_ID} 完了 バッチ=${batches.length} 件数=${totalItems}${mockLabel}`);
 
   return { batches };
 }
