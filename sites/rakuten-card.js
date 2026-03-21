@@ -137,6 +137,67 @@ function extractStatementItems() {
   return out;
 }
 
+/**
+ * 0件時の切り分け用（コンソールの警告1本にまとめる）
+ * @param {string|null} displayedYearMonth
+ */
+function logRakutenZeroDiagnostics(displayedYearMonth) {
+  const sm = document.querySelector('#statement-month');
+  const rawMonth = sm ? String(sm.value || '').trim() : '';
+  const inRange =
+    displayedYearMonth != null && displayedYearMonth >= RC_MIN_YEARMONTH;
+  const rows = document.querySelectorAll(
+    '.stmt-payment-lists__i.js-payment-sort-item'
+  );
+  const looseRows = document.querySelectorAll('.stmt-payment-lists__i');
+  const yyyymm = getStatementMonthYyyymm();
+
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    statementMonth: { exists: !!sm, rawValue: rawMonth || '(empty)' },
+    displayedYearMonth: displayedYearMonth ?? '(null)',
+    minYearMonth: RC_MIN_YEARMONTH,
+    inRange,
+    rowCountStrict: rows.length,
+    rowCountLoose: looseRows.length,
+    yyyymmForExtract: yyyymm || '(empty)'
+  };
+
+  if (rows.length > 0 && inRange) {
+    const row = rows[0];
+    const tbl = row.querySelector('.stmt-payment-lists__tbl');
+    const cells = tbl
+      ? tbl.querySelectorAll(':scope > .stmt-payment-lists__data')
+      : [];
+    const dateTitle = cells[0]
+      ? (cells[0].getAttribute('title') || '').trim()
+      : '';
+    const amountCell = cells[4];
+    const amountRaw = amountCell
+      ? amountCell.getAttribute('title') || amountCell.textContent || ''
+      : '';
+    const amount = parseAmountFromCell(amountRaw);
+    const tipBtn = row.querySelector('[data-tooltip-usage-number]');
+    let detailNo = tipBtn ? tipBtn.getAttribute('data-tooltip-usage-number') : null;
+    if (!detailNo) {
+      const copyEl = row.querySelector('.stmt-copy-area-number');
+      detailNo = copyEl ? (copyEl.textContent || '').trim() : '';
+    }
+    payload.firstRow = {
+      hasTbl: !!tbl,
+      cellCount: cells.length,
+      dateTitle: dateTitle || '(empty)',
+      amountRaw: String(amountRaw).slice(0, 120),
+      amountIsNaN: Number.isNaN(amount),
+      usedOnOk: usedOnFromDateTitle(dateTitle) != null,
+      detailNo: detailNo || '(empty)',
+      yyyymmOk: !!yyyymm
+    };
+  }
+
+  console.warn(`${LOG_PREFIX} ${SITE_ID} 0件診断`, payload);
+}
+
 async function collect_rakuten_card() {
   console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
 
@@ -154,6 +215,10 @@ async function collect_rakuten_card() {
 
   const mockLabel = (typeof window !== 'undefined' && window.__COLLECT_MOCK_MODE__) ? ' モック' : ((typeof window !== 'undefined' && window.__COLLECT_LOCAL_MODE__) ? ' ローカル' : '');
   console.log(`${LOG_PREFIX} ${SITE_ID} 完了 件数=${items.length} 表示月=${displayedYearMonth ?? '-'}${mockLabel}`);
+
+  if (items.length === 0) {
+    logRakutenZeroDiagnostics(displayedYearMonth);
+  }
 
   return {
     items: items,

@@ -19,6 +19,41 @@ function formatSiteLogMeta(siteId, invokedBy, mockMode, localMode) {
 }
 
 /**
+ * タブ内で出た console を SW に転写し、外部 API 送信用オブジェクトからは除去する
+ * @param {string} siteId
+ * @param {Object} [envelope] - collectOnPage の戻り（collectLogs を含みうる）
+ */
+function emitCollectLogsAndStrip(siteId, envelope) {
+  if (!envelope || !Object.prototype.hasOwnProperty.call(envelope, 'collectLogs')) {
+    return;
+  }
+  const logs = envelope.collectLogs;
+  if (Array.isArray(logs) && logs.length > 0) {
+    for (const entry of logs) {
+      const line = `${siteId} ${entry.text}`;
+      const lv = entry.level || 'log';
+      if (lv === 'warn') {
+        console.warn(`${LOG_PREFIX} [ページ]`, line);
+      } else if (lv === 'error') {
+        console.error(`${LOG_PREFIX} [ページ]`, line);
+      } else {
+        console.log(`${LOG_PREFIX} [ページ]`, line);
+      }
+    }
+  } else if (
+    siteId === 'rakuten-card' &&
+    Array.isArray(logs) &&
+    logs.length === 0
+  ) {
+    console.warn(
+      `${LOG_PREFIX} [ページ]`,
+      `${siteId} ページ側の console.log を0行しか取り込めませんでした（拡張を再読み込みして再試行）`
+    );
+  }
+  delete envelope.collectLogs;
+}
+
+/**
  * Storageの初期化と整合性チェック
  * 
  * settingsとstateは分離されているが、サイトが追加された場合に
@@ -132,6 +167,69 @@ async function waitForRakutenStatementDom(tabId, timeoutSec) {
   throw new Error('楽天カード明細ページの表示が確認できませんでした（タイムアウト）');
 }
 
+/**
+ * ローカル日付の「今月」を YYYYMM で返す（楽天 #statement-month と同形式）
+ * @returns {string}
+ */
+function getRakutenCalendarYyyymmNow() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * 明細ページの表示月が targetYyyymm になるまで、前月／次月リンクで移動する。
+ * 巡回の起点を「今月」に揃えるため。
+ *
+ * @param {number} tabId
+ * @param {string} targetYyyymm 例 "202603"
+ * @param {number} timeoutSec
+ * @returns {Promise<void>}
+ */
+async function navigateRakutenStatementToCalendarMonth(tabId, targetYyyymm, timeoutSec) {
+  const maxSteps = 24;
+  for (let step = 0; step < maxSteps; step++) {
+    await waitForRakutenStatementDom(tabId, timeoutSec);
+    const [cur] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const el = document.querySelector('#statement-month');
+        const v = el ? (el.value || '').trim() : '';
+        return v.length === 6 && /^\d{6}$/.test(v) ? v : '';
+      }
+    });
+    const current = cur?.result || '';
+    if (!current) {
+      throw new Error('楽天カード明細の表示月 (#statement-month) が取得できません');
+    }
+    if (current === targetYyyymm) {
+      return;
+    }
+    const tab = await chrome.tabs.get(tabId);
+    const pageUrl = tab.url || '';
+    const cmp = current.localeCompare(targetYyyymm);
+    const selector =
+      cmp > 0 ? '.stmt-head-calendar__prev' : '.stmt-head-calendar__next';
+    const [hr] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const el = document.querySelector(sel);
+        return el ? el.getAttribute('href') : null;
+      },
+      args: [selector]
+    });
+    const hrefRel = hr?.result;
+    if (!hrefRel) {
+      throw new Error(
+        `表示月 ${current} から目標 ${targetYyyymm} へ移動するためのリンクが見つかりません`
+      );
+    }
+    const fullUrl = new URL(hrefRel, pageUrl).href;
+    await chrome.tabs.update(tabId, { url: fullUrl });
+    await waitForTabComplete(tabId, timeoutSec);
+  }
+  throw new Error('カレンダー「今月」への移動がタイムアウトしました');
+}
+
 function sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -185,7 +283,8 @@ function shouldNavigateToSiteUrl(currentUrl, siteUrl) {
 /** ログイン直後の Cookie / セッション確定待ち（ms） */
 const RAKUTEN_POST_LOGIN_SETTLE_MS = 2500;
 
-const RC_MONTHS_TO_FETCH = 2;
+/** 前月へ遡る最大回数（無限ループ防止。min 未満で打ち切るまで遡る） */
+const RC_MAX_MONTHS_BACKWARD = 60;
 const RC_MIN_YEARMONTH = '2026-02';
 
 /**
@@ -330,6 +429,8 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
 
     chrome.runtime.onMessage.addListener(messageListener);
 
+    // ページ遷移のたびに注入コンテキストは消えるため、常に両方注入する。
+    // （前月リンクや「今月」合わせの tabs.update 後は content-script なしだと sendMessage が届かない）
     const files = ['sites/rakuten-card.js', 'content-script.js'];
 
     chrome.scripting.executeScript({
@@ -415,13 +516,25 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
     }
   }
 
+  await waitForRakutenStatementDom(tabId, site.timeoutSec);
+  await navigateRakutenStatementToCalendarMonth(
+    tabId,
+    getRakutenCalendarYyyymmNow(),
+    site.timeoutSec
+  );
+
   const allItems = [];
   let lastPayload = null;
+  /** @type {Array<{ level: string, text: string, at: number }>} */
+  const mergedCollectLogs = [];
 
-  for (let i = 0; i < RC_MONTHS_TO_FETCH; i++) {
+  for (let i = 0; i < RC_MAX_MONTHS_BACKWARD; i++) {
     await waitForRakutenStatementDom(tabId, site.timeoutSec);
     const pagePayload = await collectRakutenCardPage(tabId, siteId, site, mockMode, localMode);
     lastPayload = pagePayload;
+    if (pagePayload.collectLogs?.length) {
+      mergedCollectLogs.push(...pagePayload.collectLogs);
+    }
     const inner = pagePayload.payload;
     if (inner.items && inner.items.length) {
       for (const it of inner.items) {
@@ -430,9 +543,6 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
     }
     const dym = inner.displayedYearMonth;
     if (dym == null || dym < RC_MIN_YEARMONTH) {
-      break;
-    }
-    if (i === RC_MONTHS_TO_FETCH - 1) {
       break;
     }
     if (!inner.prevMonthHref) {
@@ -447,7 +557,8 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
     siteId,
     url: lastPayload ? lastPayload.url : '',
     capturedAt: Date.now(),
-    payload: { items: allItems }
+    payload: { items: allItems },
+    collectLogs: mergedCollectLogs
   };
 }
 
@@ -679,7 +790,9 @@ async function runSite(siteId, options = {}) {
       }, Math.max(0, (site.timeoutSec - 5) * 1000));
     });
     }
-    
+
+    emitCollectLogsAndStrip(siteId, payload);
+
     // site.apiUrl が存在する場合、Service Worker が送信を担当
     if (site.apiUrl && site.apiUrl.trim()) {
       const apiUrl = site.apiUrl.trim();
