@@ -145,13 +145,17 @@ async function loadSites() {
       if (optionsContainer) {
         for (const opt of schema) {
           const inputId = `${siteId}-${opt.key}`;
-          const value = site[opt.key] || '';
-          const inputType = opt.type === 'password' ? 'password' : 'text';
+          const value = site[opt.key] ?? '';
+          const inputType = opt.type === 'password' ? 'password' : (opt.type === 'number' ? 'number' : 'text');
+          const extraAttrs = [];
+          if (opt.type === 'url') extraAttrs.push('placeholder="https://..."');
+          if (opt.type === 'number' && opt.min != null) extraAttrs.push(`min="${opt.min}"`);
+          if (opt.type === 'number' && opt.max != null) extraAttrs.push(`max="${opt.max}"`);
           const group = document.createElement('div');
           group.className = 'form-group';
           group.innerHTML = `
             <label for="${escapeHtml(inputId)}">${escapeHtml(opt.label)}:</label>
-            <input type="${inputType}" id="${inputId}" value="${escapeHtml(value)}" ${opt.type === 'url' ? 'placeholder="https://..."' : ''}>
+            <input type="${inputType}" id="${inputId}" value="${escapeHtml(String(value))}" ${extraAttrs.join(' ')}>
           `;
           optionsContainer.appendChild(group);
         }

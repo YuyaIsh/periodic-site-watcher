@@ -12,10 +12,11 @@
  * - collectLogs: 収集中にページ console に出した行のコピー（タブ閉鎖後も SW で参照するため）
  *
  * @param {string} siteId - サイト識別子
+ * @param {Object} [site] - サイト設定（オプション画面で設定した値）
  * @returns {Promise<Object>} 最小契約に準拠したpayload
  * @throws {Error} 未対応のsiteIdの場合
  */
-async function collectOnPage(siteId) {
+async function collectOnPage(siteId, site = {}) {
   const fnName = 'collect_' + siteId;
   const fn = typeof window[fnName] === 'function' ? window[fnName] : null;
   if (!fn) {
@@ -58,7 +59,7 @@ async function collectOnPage(siteId) {
   window.console = proxy;
   let result;
   try {
-    result = await Promise.resolve(fn());
+    result = await Promise.resolve(fn(site));
   } finally {
     window.console = origConsole;
   }
@@ -88,7 +89,9 @@ if (!window.__PERIODIC_SITE_WATCHER_COLLECT_LISTENER__) {
       }
       (async () => {
         try {
-          const result = await collectOnPage(message.siteId);
+          const { settings } = await chrome.storage.local.get('settings');
+          const site = settings?.sites?.[message.siteId] || {};
+          const result = await collectOnPage(message.siteId, site);
           sendResponse({ type: 'COLLECT_RESULT', payload: result });
         } catch (error) {
           sendResponse({ type: 'COLLECT_RESULT', error: error.message });

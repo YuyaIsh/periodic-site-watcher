@@ -7,13 +7,21 @@
 
 const LOG_PREFIX = '[サイト巡回]';
 const SITE_ID = 'moneyforward';
-const MF_MONTHS_TO_FETCH = 2; // 当月 + 前月の2ヶ月分
+
 /**
- * 対象とする最小年月（この月を含む）
- * - 取得対象: 表示月が `MF_MIN_YEARMONTH` 以上（例: 2026-02 なら 2026-02, 2026-03, ...）
- * - 取得しない: 表示月が `MF_MIN_YEARMONTH` 未満（例: 2026-01, 2025-12, ...）
+ * オプションから取得月数と最小対象年月を取得する
+ * @param {Object} [site] - サイト設定（オプション画面の値）
+ * @returns {{ monthsToFetch: number, minYearMonth: string }}
  */
-const MF_MIN_YEARMONTH = '2026-02';
+function getMfOptions(site = {}) {
+  const monthsRaw = site?.mfMonthsToFetch;
+  const monthsToFetch = (monthsRaw !== '' && monthsRaw != null)
+    ? Math.max(1, Math.min(24, parseInt(String(monthsRaw), 10) || 2))
+    : 2;
+  const minRaw = (site?.mfMinYearMonth || '').trim();
+  const minYearMonth = /^\d{4}-\d{2}$/.test(minRaw) ? minRaw : '2025-03';
+  return { monthsToFetch, minYearMonth };
+}
 
 function normalizeCardType(dataOriginalTitle) {
   if (!dataOriginalTitle || dataOriginalTitle.trim() === '') {
@@ -97,8 +105,10 @@ function getDisplayedYearMonth() {
   return ymd.slice(0, 7);
 }
 
-async function collect_moneyforward() {
+async function collect_moneyforward(site = {}) {
   console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
+
+  const { monthsToFetch: MF_MONTHS_TO_FETCH, minYearMonth: MF_MIN_YEARMONTH } = getMfOptions(site);
 
   const TABLE_UPDATE_TIMEOUT_MS = 10000;
 

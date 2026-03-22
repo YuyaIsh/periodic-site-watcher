@@ -6,7 +6,16 @@
 
 const LOG_PREFIX = '[サイト巡回]';
 const SITE_ID = 'rakuten-card';
-const RC_MIN_YEARMONTH = '2026-03';
+
+/**
+ * オプションから最小対象年月を取得する
+ * @param {Object} [site] - サイト設定（オプション画面の値）
+ * @returns {string}
+ */
+function getRcMinYearMonth(site = {}) {
+  const raw = (site?.rcMinYearMonth || '').trim();
+  return /^\d{4}-\d{2}$/.test(raw) ? raw : '2026-03';
+}
 
 /**
  * @param {string} s
@@ -141,11 +150,11 @@ function extractStatementItems() {
  * 0件時の切り分け用（コンソールの警告1本にまとめる）
  * @param {string|null} displayedYearMonth
  */
-function logRakutenZeroDiagnostics(displayedYearMonth) {
+function logRakutenZeroDiagnostics(displayedYearMonth, rcMinYearMonth) {
   const sm = document.querySelector('#statement-month');
   const rawMonth = sm ? String(sm.value || '').trim() : '';
   const inRange =
-    displayedYearMonth != null && displayedYearMonth >= RC_MIN_YEARMONTH;
+    displayedYearMonth != null && displayedYearMonth >= rcMinYearMonth;
   const rows = document.querySelectorAll(
     '.stmt-payment-lists__i.js-payment-sort-item'
   );
@@ -156,7 +165,7 @@ function logRakutenZeroDiagnostics(displayedYearMonth) {
   const payload = {
     statementMonth: { exists: !!sm, rawValue: rawMonth || '(empty)' },
     displayedYearMonth: displayedYearMonth ?? '(null)',
-    minYearMonth: RC_MIN_YEARMONTH,
+    minYearMonth: rcMinYearMonth,
     inRange,
     rowCountStrict: rows.length,
     rowCountLoose: looseRows.length,
@@ -198,9 +207,10 @@ function logRakutenZeroDiagnostics(displayedYearMonth) {
   console.warn(`${LOG_PREFIX} ${SITE_ID} 0件診断`, payload);
 }
 
-async function collect_rakuten_card() {
+async function collect_rakuten_card(site = {}) {
   console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
 
+  const RC_MIN_YEARMONTH = getRcMinYearMonth(site);
   const displayedYearMonth = getDisplayedYearMonth();
 
   let items = [];
@@ -217,7 +227,7 @@ async function collect_rakuten_card() {
   console.log(`${LOG_PREFIX} ${SITE_ID} 完了 件数=${items.length} 表示月=${displayedYearMonth ?? '-'}${mockLabel}`);
 
   if (items.length === 0) {
-    logRakutenZeroDiagnostics(displayedYearMonth);
+    logRakutenZeroDiagnostics(displayedYearMonth, RC_MIN_YEARMONTH);
   }
 
   return {

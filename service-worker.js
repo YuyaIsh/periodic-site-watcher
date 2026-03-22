@@ -283,9 +283,8 @@ function shouldNavigateToSiteUrl(currentUrl, siteUrl) {
 /** ログイン直後の Cookie / セッション確定待ち（ms） */
 const RAKUTEN_POST_LOGIN_SETTLE_MS = 2500;
 
-/** 前月へ遡る最大回数（無限ループ防止。min 未満で打ち切るまで遡る） */
+/** 前月へ遡る最大回数（無限ループ防止の上限） */
 const RC_MAX_MONTHS_BACKWARD = 60;
-const RC_MIN_YEARMONTH = '2026-02';
 
 /**
  * 楽天カード明細を household-statement-import へ送信する
@@ -523,12 +522,19 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
     site.timeoutSec
   );
 
+  const rcMonthsRaw = site?.rcMonthsToFetch;
+  const rcMonthsToFetch = (rcMonthsRaw !== '' && rcMonthsRaw != null)
+    ? Math.max(1, Math.min(60, parseInt(String(rcMonthsRaw), 10) || 2))
+    : 2;
+  const rcMinRaw = (site?.rcMinYearMonth || '').trim();
+  const rcMinYearMonth = /^\d{4}-\d{2}$/.test(rcMinRaw) ? rcMinRaw : '2026-03';
+
   const allItems = [];
   let lastPayload = null;
   /** @type {Array<{ level: string, text: string, at: number }>} */
   const mergedCollectLogs = [];
 
-  for (let i = 0; i < RC_MAX_MONTHS_BACKWARD; i++) {
+  for (let i = 0; i < Math.min(RC_MAX_MONTHS_BACKWARD, rcMonthsToFetch); i++) {
     await waitForRakutenStatementDom(tabId, site.timeoutSec);
     const pagePayload = await collectRakutenCardPage(tabId, siteId, site, mockMode, localMode);
     lastPayload = pagePayload;
@@ -542,7 +548,7 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
       }
     }
     const dym = inner.displayedYearMonth;
-    if (dym == null || dym < RC_MIN_YEARMONTH) {
+    if (dym == null || dym < rcMinYearMonth) {
       break;
     }
     if (!inner.prevMonthHref) {
