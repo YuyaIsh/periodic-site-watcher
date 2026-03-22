@@ -84,6 +84,21 @@
       font-size: 14px;
       box-sizing: border-box;
     }
+    .url-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .url-input-row input[type="text"] {
+      flex: 1;
+      min-width: 0;
+    }
+    .url-input-row button.open-site-url {
+      flex-shrink: 0;
+      margin-right: 0;
+      white-space: nowrap;
+      align-self: stretch;
+    }
     input[type="checkbox"] {
       width: auto;
       margin-right: 5px;
@@ -150,6 +165,9 @@
       <label>Slack Webhook URL:</label>
       <input type="text" id="slack-webhook-url" placeholder="https://hooks.slack.com/services/..." style="width: 100%;">
       <small style="color: #666; font-size: 12px;">失敗時に Slack へ通知します（任意）</small>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="button" id="save-notification-button" style="background: #1a73e8;">通知設定を保存</button>
     </div>
   </div>
   

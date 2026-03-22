@@ -73,7 +73,10 @@ async function loadSites() {
       
       <div class="form-group">
         <label>URL:</label>
-        <input type="text" id="${siteId}-url" value="${escapeHtml(site.url)}" placeholder="https://example.com">
+        <div class="url-input-row">
+          <input type="text" id="${siteId}-url" value="${escapeHtml(site.url)}" placeholder="https://example.com">
+          <button type="button" class="open-site-url" data-site-id="${escapeHtml(siteId)}" title="このURLを新しいタブで開く">開く</button>
+        </div>
       </div>
       
       <div class="form-group">
@@ -172,6 +175,28 @@ async function loadSites() {
       });
     }
     
+    // URL「開く」ボタン
+    const openUrlButton = siteDiv.querySelector('.open-site-url');
+    if (openUrlButton) {
+      openUrlButton.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = openUrlButton.getAttribute('data-site-id');
+        const urlInput = document.getElementById(`${id}-url`);
+        const raw = urlInput ? urlInput.value.trim() : '';
+        if (!raw) {
+          alert(`サイト "${id}" のURLが入力されていません。`);
+          return;
+        }
+        try {
+          new URL(raw);
+        } catch {
+          alert(`サイト "${id}" のURL形式が正しくありません。`);
+          return;
+        }
+        chrome.tabs.create({ url: raw });
+      });
+    }
+
     // 「保存」ボタンのイベントリスナーを設定
     const saveButton = siteDiv.querySelector('.save-site');
     if (saveButton) {
@@ -343,6 +368,45 @@ const DEFAULT_SITE = {
 };
 
 /**
+ * フォームの Slack Webhook URL を settings オブジェクトに反映する（storage 保存はしない）
+ *
+ * @param {Object} settings - 更新対象の settings
+ * @returns {boolean} 検証に成功したら true、失敗時は alert 済みで false
+ */
+function applySlackWebhookFromForm(settings) {
+  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
+  if (!slackWebhookUrlInput) {
+    return true;
+  }
+  const slackWebhookUrl = slackWebhookUrlInput.value.trim();
+  if (slackWebhookUrl) {
+    try {
+      new URL(slackWebhookUrl);
+      settings.slackWebhookUrl = slackWebhookUrl;
+    } catch {
+      alert('Slack Webhook URLの形式が正しくありません。');
+      return false;
+    }
+  } else {
+    delete settings.slackWebhookUrl;
+  }
+  return true;
+}
+
+/**
+ * 通知設定（Slack Webhook のみ）を storage に保存する
+ */
+async function saveNotificationSettings() {
+  const result = await chrome.storage.local.get('settings');
+  const settings = result.settings || { sites: {} };
+  if (!applySlackWebhookFromForm(settings)) {
+    return;
+  }
+  await chrome.storage.local.set({ settings });
+  alert('通知設定を保存しました');
+}
+
+/**
  * 指定されたサイトの設定を保存する
  * 
  * フォームから設定を読み取り、バリデーションを実施してからstorageに保存する。
@@ -478,26 +542,11 @@ async function saveSite(siteId) {
 async function saveAllSites() {
   const result = await chrome.storage.local.get('settings');
   const settings = result.settings || { sites: {} };
-  
-  // Slack Webhook URLを保存
-  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
-  if (slackWebhookUrlInput) {
-    const slackWebhookUrl = slackWebhookUrlInput.value.trim();
-    if (slackWebhookUrl) {
-      // URL形式の検証（空の場合は保存しない）
-      try {
-        new URL(slackWebhookUrl);
-        settings.slackWebhookUrl = slackWebhookUrl;
-      } catch {
-        alert('Slack Webhook URLの形式が正しくありません。');
-        return;
-      }
-    } else {
-      // 空の場合は削除
-      delete settings.slackWebhookUrl;
-    }
+
+  if (!applySlackWebhookFromForm(settings)) {
+    return;
   }
-  
+
   for (const siteId of Object.keys(settings.sites)) {
     const enabled = document.getElementById(`${siteId}-enabled`).checked;
     const url = document.getElementById(`${siteId}-url`).value.trim();
@@ -691,6 +740,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveAllButton = document.getElementById('save-all-button');
   if (saveAllButton) {
     saveAllButton.addEventListener('click', saveAllSites);
+  }
+
+  const saveNotificationButton = document.getElementById('save-notification-button');
+  if (saveNotificationButton) {
+    saveNotificationButton.addEventListener('click', saveNotificationSettings);
   }
 });
 
