@@ -6,7 +6,7 @@
 
 const LOG_PREFIX = '[サイト巡回]';
 const SITE_ID = 'rakuten-card';
-const RC_MIN_YEARMONTH = '2026-02';
+const RC_MIN_YEARMONTH = '2026-03';
 
 /**
  * @param {string} s
