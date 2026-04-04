@@ -183,19 +183,16 @@ async function waitForRakutenStatementDom(tabId, timeoutSec) {
 }
 
 /**
- * ローカル日付の「翌月」（支払月基準）を YYYYMM で返す（楽天 #statement-month と同形式）
- * 例: 3月 → 4月、12月 → 翌年1月
+ * ローカル暦の当月を YYYYMM で返す（楽天 #statement-month 形式）
  * @returns {string}
  */
 function getRakutenCalendarYyyymmNow() {
   const d = new Date();
-  d.setMonth(d.getMonth() + 1);
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 /**
  * 明細ページの表示月が targetYyyymm になるまで、前月／次月リンクで移動する。
- * 巡回の起点を「支払月基準の翌月」に揃えるため。
  *
  * @param {number} tabId
  * @param {string} targetYyyymm 例 "202603"
@@ -245,7 +242,7 @@ async function navigateRakutenStatementToCalendarMonth(tabId, targetYyyymm, time
     await chrome.tabs.update(tabId, { url: fullUrl });
     await waitForTabComplete(tabId, timeoutSec);
   }
-  throw new Error('カレンダー「支払月基準翌月」への移動がタイムアウトしました');
+  throw new Error('カレンダー表示月の目標位置への移動がタイムアウトしました');
 }
 
 function sleepMs(ms) {
