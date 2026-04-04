@@ -136,6 +136,21 @@ function waitForTabComplete(tabId, timeoutSec) {
 }
 
 /**
+ * 非アクティブタブでは Page Visibility / タイマー抑制で明細のクライアント描画が遅延しやすいため、
+ * 楽天カード巡回時は対象タブを選択状態にする。
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function activateRakutenStatementTab(tabId) {
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch (_) {
+    /* タブが既に閉じている等 */
+  }
+}
+
+/**
  * tabs の complete 直後でも明細はクライアント描画で遅れることがあるため、
  * 明細 UI が DOM に現れるまで待つ（空のまま collect してタブだけ閉じるのを防ぐ）。
  *
@@ -190,6 +205,7 @@ function getRakutenCalendarYyyymmNow() {
 async function navigateRakutenStatementToCalendarMonth(tabId, targetYyyymm, timeoutSec) {
   const maxSteps = 24;
   for (let step = 0; step < maxSteps; step++) {
+    await activateRakutenStatementTab(tabId);
     await waitForRakutenStatementDom(tabId, timeoutSec);
     const [cur] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -486,6 +502,7 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
  * @returns {Promise<Object>}
  */
 async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
+  await activateRakutenStatementTab(tabId);
   const { promise: loginPromise, cancel: cancelLoginWait } = createRakutenLoginWait(
     tabId,
     site.timeoutSec
@@ -537,6 +554,7 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
   const mergedCollectLogs = [];
 
   for (let i = 0; i < Math.min(RC_MAX_MONTHS_BACKWARD, rcMonthsToFetch); i++) {
+    await activateRakutenStatementTab(tabId);
     await waitForRakutenStatementDom(tabId, site.timeoutSec);
     const pagePayload = await collectRakutenCardPage(tabId, siteId, site, mockMode, localMode);
     lastPayload = pagePayload;
@@ -690,7 +708,10 @@ async function runSite(siteId, options = {}) {
     }
 
     console.log(`${meta} 開始`);
-    const tab = await chrome.tabs.create({ url: site.url, active: false });
+    const tab = await chrome.tabs.create({
+      url: site.url,
+      active: siteId === 'rakuten-card'
+    });
     tabId = tab.id;
     
     await waitForTabComplete(tabId, site.timeoutSec);
