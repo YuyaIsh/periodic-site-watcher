@@ -1,5 +1,10 @@
 // 共通ユーティリティを読み込む（Service WorkerではimportScriptsを使用）
-importScripts('utils/schedule.js', 'utils/validation.js', 'utils/slack.js');
+importScripts(
+  'utils/schedule.js',
+  'utils/validation.js',
+  'utils/slack.js',
+  'utils/options-api-log.js'
+);
 
 /** ログ出力の統一プレフィックス（SW・sites/共通で利用） */
 const LOG_PREFIX = '[サイト巡回]';
@@ -161,23 +166,41 @@ async function activateRakutenStatementTab(tabId) {
 async function waitForRakutenStatementDom(tabId, timeoutSec) {
   const deadline = Date.now() + timeoutSec * 1000;
   const pollMs = 250;
+  let sawStatement = false;
   while (Date.now() < deadline) {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        func: () =>
-          !!(
+        func: () => {
+          const hasStatement = !!(
             document.querySelector('#statement-month') ||
             document.querySelector('.stmt-payment-lists__i.js-payment-sort-item')
-          )
+          );
+          const el = document.querySelector('.stmt-about-info__date__detail');
+          let headerOk = false;
+          if (el) {
+            const text = (el.textContent || '')
+              .replace(/\s*\([^)]*\)\s*$/, '')
+              .trim();
+            headerOk = /(\d{4})年(\d{1,2})月(\d{1,2})日/.test(text);
+          }
+          return { hasStatement, headerOk };
+        }
       });
-      if (results?.[0]?.result) {
+      const r = results?.[0]?.result;
+      if (r?.hasStatement) {
+        sawStatement = true;
+      }
+      if (r?.hasStatement && r?.headerOk) {
         return;
       }
     } catch (e) {
       /* 遷移直後は注入できないことがある */
     }
     await new Promise((r) => setTimeout(r, pollMs));
+  }
+  if (sawStatement) {
+    return;
   }
   throw new Error('楽天カード明細ページの表示が確認できませんでした（タイムアウト）');
 }
@@ -318,6 +341,17 @@ async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, loc
     : (site.householdApiKey || '');
 
   if (mockMode) {
+    let logUrl = apiUrl || '(未設定)';
+    if (apiUrl && localMode) {
+      logUrl = resolveLocalApiUrl(apiUrl);
+    }
+    appendOptionsApiRequestLog({
+      siteId,
+      url: logUrl,
+      mockMode: true,
+      localMode,
+      body: { items }
+    }).catch(() => {});
     console.log(`${LOG_PREFIX} [モック] ${siteId} household POST ${apiUrl || '(未設定)'} 件数=${items?.length ?? 0}`);
     return;
   }
@@ -335,6 +369,13 @@ async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, loc
   if (localMode) {
     postUrl = resolveLocalApiUrl(apiUrl);
   }
+  appendOptionsApiRequestLog({
+    siteId,
+    url: postUrl,
+    mockMode: false,
+    localMode,
+    body: { items }
+  }).catch(() => {});
   const response = await fetch(postUrl, {
     method: 'POST',
     headers: {
@@ -610,16 +651,32 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
   if (!isValidApiUrl(apiUrl)) {
     throw new Error(`Invalid IFA API URL format: ${apiUrl}`);
   }
-  if (mockMode) {
-    const totalItems = batches?.reduce((sum, b) => sum + (b?.items?.length ?? 0), 0) ?? 0;
-    console.log(`${LOG_PREFIX} [モック] ${siteId} IFA POST バッチ=${batches?.length ?? 0} 件数=${totalItems}`);
-    return;
-  }
   let postUrl = apiUrl;
   if (localMode) {
     postUrl = resolveLocalApiUrl(apiUrl);
   }
+  if (mockMode) {
+    const totalItems = batches?.reduce((sum, b) => sum + (b?.items?.length ?? 0), 0) ?? 0;
+    for (const batch of batches) {
+      appendOptionsApiRequestLog({
+        siteId,
+        url: postUrl,
+        mockMode: true,
+        localMode,
+        body: batch
+      }).catch(() => {});
+    }
+    console.log(`${LOG_PREFIX} [モック] ${siteId} IFA POST バッチ=${batches?.length ?? 0} 件数=${totalItems}`);
+    return;
+  }
   for (const batch of batches) {
+    appendOptionsApiRequestLog({
+      siteId,
+      url: postUrl,
+      mockMode: false,
+      localMode,
+      body: batch
+    }).catch(() => {});
     const response = await fetch(postUrl, {
       method: 'POST',
       headers: {

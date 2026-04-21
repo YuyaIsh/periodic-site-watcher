@@ -74,6 +74,59 @@ function defaultCardPaymentDateFromMonth(yyyymm) {
 }
 
 /**
+ * 「YYYY年MM月以降分」カレンダー表示時の閾値年月（YYYY-MM）。未検出は null。
+ * @returns {string|null}
+ */
+function parseSinceMonthFromCalendarButton() {
+  const btn = document.querySelector('#js-payment-calendar-btn');
+  if (!btn) return null;
+  const text = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+  const primary = /(\d{4})年(\d{1,2})月以降/.exec(text);
+  if (primary) {
+    const y = primary[1];
+    const mo = primary[2].padStart(2, '0');
+    return `${y}-${mo}`;
+  }
+  if (!text.includes('以降')) return null;
+  const sm = document.querySelector('#statement-month');
+  if (!sm) return null;
+  const v = (sm.value || '').trim();
+  if (v.length !== 6 || !/^\d{6}$/.test(v)) return null;
+  return v.slice(0, 4) + '-' + v.slice(4, 6);
+}
+
+/**
+ * @param {string|null} ymd YYYY-MM-DD
+ * @returns {number|null} 1–31
+ */
+function paymentDayFromYmd(ymd) {
+  if (!ymd || ymd.length < 10) return null;
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = parseInt(m[3], 10);
+  return d >= 1 && d <= 31 ? d : null;
+}
+
+/**
+ * 利用月の翌月に支払日を載せ替え（ヘッダー日 or 25、無効日は月末クランプ）
+ * @param {string} usedOn YYYY-MM-DD
+ * @param {string|null} headerPayYmd
+ * @returns {string} YYYY-MM-DD
+ */
+function cardPaymentDateInMonthAfterUsed(usedOn, headerPayYmd) {
+  const day = paymentDayFromYmd(headerPayYmd) ?? 25;
+  const parts = usedOn.split('-');
+  const y = parseInt(parts[0], 10);
+  const mo = parseInt(parts[1], 10);
+  const firstOfNext = new Date(y, mo - 1 + 1, 1);
+  const py = firstOfNext.getFullYear();
+  const pm = firstOfNext.getMonth() + 1;
+  const lastDay = new Date(py, pm, 0).getDate();
+  const d = Math.min(day, lastDay);
+  return `${py}-${String(pm).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/**
  * @param {string} raw
  * @returns {number}
  */
@@ -98,10 +151,15 @@ function usedOnFromDateTitle(dateTitle) {
  * @returns {Array<Object>}
  */
 function extractStatementItems() {
+  const sinceYm = parseSinceMonthFromCalendarButton();
+  if (sinceYm != null) {
+    console.log(`${LOG_PREFIX} ${SITE_ID} 以降検出 sinceYm=${sinceYm}`);
+  }
+
   const yyyymm = getStatementMonthYyyymm();
   const defaultPay = parseCardPaymentDateFromPage();
   const fallbackPay = defaultCardPaymentDateFromMonth(yyyymm);
-  const cardPaymentDate = defaultPay || fallbackPay || '';
+  const baseCardPaymentDate = defaultPay || fallbackPay || '';
 
   const rows = document.querySelectorAll(
     '.stmt-payment-lists__i.js-payment-sort-item'
@@ -125,6 +183,11 @@ function extractStatementItems() {
     const usedOn = usedOnFromDateTitle(dateTitle);
     if (!usedOn) continue;
 
+    let cardPaymentDate = baseCardPaymentDate;
+    if (sinceYm != null && usedOn.slice(0, 7) === sinceYm) {
+      cardPaymentDate = cardPaymentDateInMonthAfterUsed(usedOn, defaultPay);
+    }
+
     const tipBtn = row.querySelector('[data-tooltip-usage-number]');
     let detailNo = tipBtn ? tipBtn.getAttribute('data-tooltip-usage-number') : null;
     if (!detailNo) {
@@ -136,7 +199,7 @@ function extractStatementItems() {
     out.push({
       externalId: yyyymm + ':' + detailNo,
       usedOn: usedOn,
-      cardPaymentDate: cardPaymentDate,
+      cardPaymentDate,
       amount: amount,
       transferBank: 'GMO_AOZORA',
       useTarget: normalizeUseTarget(storeTitle)

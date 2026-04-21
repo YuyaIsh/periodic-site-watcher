@@ -154,10 +154,50 @@
     .status-fail {
       color: #ea4335;
     }
+    .options-api-log-section pre#options-api-log {
+      margin: 0;
+      max-height: 480px;
+      overflow: auto;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      border: 1px solid #333;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .options-api-log-toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .options-api-log-toolbar button.secondary {
+      background: #5f6368;
+    }
+    .options-api-log-toolbar button.secondary:hover {
+      background: #4a4d51;
+    }
   </style>
 </head>
 <body>
   <h1>定期巡回サイトウォッチャー - 設定</h1>
+  
+  <div class="site-section options-api-log-section">
+    <h2>API 送信ログ（デバッグ）</h2>
+    <p style="color: #666; font-size: 13px; margin-top: 0;">
+      楽天カード・マネーフォワードで外部 API へ <code>POST</code> する直前の URL とボディを最大50件まで保持します（古いものから削除。上に近いほど新しい記録です）。API キーは含みません。
+    </p>
+    <div class="options-api-log-toolbar">
+      <button type="button" id="options-api-log-refresh" class="secondary">再表示</button>
+      <button type="button" id="options-api-log-clear" class="delete">ログを消去</button>
+    </div>
+    <pre id="options-api-log" aria-label="API送信ログ"></pre>
+  </div>
   
   <div class="site-section">
     <h2>通知設定</h2>

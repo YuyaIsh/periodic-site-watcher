@@ -3,6 +3,49 @@
 // 共通ユーティリティを読み込む（HTMLからscriptタグで読み込まれる）
 // utils/validation.js と utils/schedule.js が先に読み込まれている必要がある
 
+/** Service Worker 側 utils/options-api-log.js と同じキー */
+const OPTIONS_API_LOG_STORAGE_KEY = 'optionsApiRequestLog';
+
+/**
+ * オプション上部の API 送信ログ欄を更新する
+ * @param {Array<unknown>|undefined} entries
+ */
+function renderOptionsApiLog(entries) {
+  const el = document.getElementById('options-api-log');
+  if (!el) {
+    return;
+  }
+  if (!entries || entries.length === 0) {
+    el.textContent =
+      '（送信ログはまだありません。楽天カード／マネーフォワードの巡回で API 送信時にここへ追記されます。オプションを開いたままにすると自動更新されます。）';
+    return;
+  }
+  const blocks = entries.slice().reverse().map((e) => {
+    const row = typeof e === 'object' && e !== null ? { ...e } : { value: e };
+    if (typeof row.at === 'number') {
+      row.atLocal = new Date(row.at).toLocaleString('ja-JP', {
+        dateStyle: 'medium',
+        timeStyle: 'medium'
+      });
+    }
+    return JSON.stringify(row, null, 2);
+  });
+  el.textContent = blocks.join('\n\n————————————————\n\n');
+}
+
+async function refreshOptionsApiLog() {
+  const got = await chrome.storage.local.get(OPTIONS_API_LOG_STORAGE_KEY);
+  renderOptionsApiLog(got[OPTIONS_API_LOG_STORAGE_KEY]);
+}
+
+async function clearOptionsApiLog() {
+  if (!confirm('API 送信ログをすべて消去しますか？')) {
+    return;
+  }
+  await chrome.storage.local.set({ [OPTIONS_API_LOG_STORAGE_KEY]: [] });
+  await refreshOptionsApiLog();
+}
+
 /**
  * 指定 siteId の sites/${siteId}.options.js を動的ロードする
  *
@@ -733,6 +776,23 @@ function escapeHtml(text) {
 // ページ読み込み時にサイト一覧を表示し、イベントリスナーを設定
 document.addEventListener('DOMContentLoaded', () => {
   loadSites();
+  refreshOptionsApiLog();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[OPTIONS_API_LOG_STORAGE_KEY]) {
+      return;
+    }
+    renderOptionsApiLog(changes[OPTIONS_API_LOG_STORAGE_KEY].newValue);
+  });
+
+  const logRefresh = document.getElementById('options-api-log-refresh');
+  if (logRefresh) {
+    logRefresh.addEventListener('click', () => refreshOptionsApiLog());
+  }
+  const logClear = document.getElementById('options-api-log-clear');
+  if (logClear) {
+    logClear.addEventListener('click', () => clearOptionsApiLog());
+  }
   
   // サイト追加ボタンのイベントリスナー
   const addSiteButton = document.getElementById('add-site-button');
