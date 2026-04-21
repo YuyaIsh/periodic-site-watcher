@@ -206,66 +206,52 @@ async function waitForRakutenStatementDom(tabId, timeoutSec) {
 }
 
 /**
- * ローカル暦の当月を YYYYMM で返す（楽天 #statement-month 形式）
- * @returns {string}
- */
-function getRakutenCalendarYyyymmNow() {
-  const d = new Date();
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-
-/**
- * 明細ページの表示月が targetYyyymm になるまで、前月／次月リンクで移動する。
+ * カレンダーで「次月」が無効になるまで進み、サイト上もっとも新しい明細月（以降分含む）を表示する。
+ * 無効時は <span class="stmt-head-calendar__next stmt-head-calendar--desable"> になる。
  *
  * @param {number} tabId
- * @param {string} targetYyyymm 例 "202603"
  * @param {number} timeoutSec
  * @returns {Promise<void>}
  */
-async function navigateRakutenStatementToCalendarMonth(tabId, targetYyyymm, timeoutSec) {
+async function navigateRakutenStatementToLatestMonth(tabId, timeoutSec) {
   const maxSteps = 24;
   for (let step = 0; step < maxSteps; step++) {
     await activateRakutenStatementTab(tabId);
     await waitForRakutenStatementDom(tabId, timeoutSec);
-    const [cur] = await chrome.scripting.executeScript({
+    const [probe] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => {
-        const el = document.querySelector('#statement-month');
-        const v = el ? (el.value || '').trim() : '';
-        return v.length === 6 && /^\d{6}$/.test(v) ? v : '';
+        const nextEl = document.querySelector('.stmt-head-calendar__next');
+        if (!nextEl) {
+          return { atLatest: true, href: null };
+        }
+        const desabled =
+          nextEl.classList.contains('stmt-head-calendar--desable') ||
+          nextEl.classList.contains('stmt-head-calendar--disable');
+        if (desabled) {
+          return { atLatest: true, href: null };
+        }
+        if (nextEl.tagName !== 'A') {
+          return { atLatest: true, href: null };
+        }
+        const href = nextEl.getAttribute('href');
+        if (!href) {
+          return { atLatest: true, href: null };
+        }
+        return { atLatest: false, href };
       }
     });
-    const current = cur?.result || '';
-    if (!current) {
-      throw new Error('楽天カード明細の表示月 (#statement-month) が取得できません');
-    }
-    if (current === targetYyyymm) {
+    const p = probe?.result;
+    if (!p || p.atLatest) {
       return;
     }
     const tab = await chrome.tabs.get(tabId);
     const pageUrl = tab.url || '';
-    const cmp = current.localeCompare(targetYyyymm);
-    const selector =
-      cmp > 0 ? '.stmt-head-calendar__prev' : '.stmt-head-calendar__next';
-    const [hr] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (sel) => {
-        const el = document.querySelector(sel);
-        return el ? el.getAttribute('href') : null;
-      },
-      args: [selector]
-    });
-    const hrefRel = hr?.result;
-    if (!hrefRel) {
-      throw new Error(
-        `表示月 ${current} から目標 ${targetYyyymm} へ移動するためのリンクが見つかりません`
-      );
-    }
-    const fullUrl = new URL(hrefRel, pageUrl).href;
+    const fullUrl = new URL(p.href, pageUrl).href;
     await chrome.tabs.update(tabId, { url: fullUrl });
     await waitForTabComplete(tabId, timeoutSec);
   }
-  throw new Error('カレンダー表示月の目標位置への移動がタイムアウトしました');
+  throw new Error('楽天カード明細の最新月への移動がタイムアウトしました');
 }
 
 function sleepMs(ms) {
@@ -573,11 +559,7 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
   }
 
   await waitForRakutenStatementDom(tabId, site.timeoutSec);
-  await navigateRakutenStatementToCalendarMonth(
-    tabId,
-    getRakutenCalendarYyyymmNow(),
-    site.timeoutSec
-  );
+  await navigateRakutenStatementToLatestMonth(tabId, site.timeoutSec);
 
   const rcMonthsRaw = site?.rcMonthsToFetch;
   const rcMonthsToFetch = (rcMonthsRaw !== '' && rcMonthsRaw != null)
