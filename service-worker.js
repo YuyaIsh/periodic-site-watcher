@@ -685,6 +685,29 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
 }
 
 /**
+ * 巡回結果ペイロードから記録件数を算出する（既知の siteId の形のみ）
+ * ログ用・Slack 補足用。形が分からないサイトは null。
+ *
+ * @param {string} siteId
+ * @param {Object} [payload] - collect の戻り（payload.payload に各サイト固有データ）
+ * @returns {number|null}
+ */
+function getPayloadRecordCount(siteId, payload) {
+  const p = payload?.payload;
+  if (!p) return null;
+  if (siteId === 'moneyforward' && Array.isArray(p.batches)) {
+    return p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+  }
+  if (siteId === 'rakuten-card' && Array.isArray(p.items)) {
+    return p.items.length;
+  }
+  if (siteId === 'x-bookmarks' && Array.isArray(p.tweets)) {
+    return p.tweets.length;
+  }
+  return null;
+}
+
+/**
  * 1サイトの巡回処理を実行する
  * 
  * 設計書の「共通骨格」に従い、タブは毎回新規作成して処理後に必ず閉じる。
@@ -905,34 +928,22 @@ async function runSite(siteId, options = {}) {
     };
     await chrome.storage.local.set({ state: currentState.state });
 
-    const countSummary = (() => {
-      const p = payload?.payload;
-      if (!p) return '';
-      if (siteId === 'moneyforward' && Array.isArray(p.batches)) {
-        const n = p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
-        return ` ${n}件取得`;
-      }
-      if (siteId === 'rakuten-card' && Array.isArray(p.items)) {
-        return ` ${p.items.length}件取得`;
-      }
-      if (siteId === 'x-bookmarks' && Array.isArray(p.tweets)) {
-        return ` ${p.tweets.length}件取得`;
-      }
-      return '';
-    })();
+    const recordCount = getPayloadRecordCount(siteId, payload);
+    const countSummary = recordCount === null ? '' : ` ${recordCount}件`;
     console.log(`${meta} 成功${countSummary}`);
 
-    if (settings?.slackWebhookUrl && (siteId === 'rakuten-card' || siteId === 'moneyforward')) {
-      const p = payload?.payload;
-      let zeroItemsTotal = null;
-      if (siteId === 'moneyforward' && Array.isArray(p?.batches)) {
-        zeroItemsTotal = p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
-      } else if (siteId === 'rakuten-card' && Array.isArray(p?.items)) {
-        zeroItemsTotal = p.items.length;
-      }
-      if (zeroItemsTotal === 0) {
-        await notifySlackOnZeroItems(settings.slackWebhookUrl, { siteId });
-      }
+    if (settings?.slackWebhookUrl && recordCount === 0) {
+      await notifySlackOnZeroItems(settings.slackWebhookUrl, { siteId });
+    }
+
+    // エラー用 Webhook とは別チャンネルへ稼働確認（heartbeat）通知（モック実行は除く・URL 未設定なら送らない）
+    if (!mockMode && settings?.slackSuccessWebhookUrl?.trim()) {
+      const runLabel = `${invokedBy === 'manual' ? '手動' : 'スケジュール'} / ${localMode ? 'ローカル' : '通常'}`;
+      await notifySlackOnSuccess(settings.slackSuccessWebhookUrl, {
+        siteId,
+        recordCount,
+        runLabel,
+      });
     }
 
   } catch (error) {

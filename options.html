@@ -202,9 +202,14 @@
   <div class="site-section">
     <h2>通知設定</h2>
     <div class="form-group">
-      <label>Slack Webhook URL:</label>
+      <label>Slack Webhook URL（失敗・0件時）:</label>
       <input type="text" id="slack-webhook-url" placeholder="https://hooks.slack.com/services/..." style="width: 100%;">
-      <small style="color: #666; font-size: 12px;">失敗時に Slack へ通知します（任意）</small>
+      <small style="color: #666; font-size: 12px;">失敗時・記録0件の注意喚起に使います（任意）</small>
+    </div>
+    <div class="form-group" style="margin-top: 12px;">
+      <label>Slack Webhook URL（成功・稼働確認）:</label>
+      <input type="text" id="slack-success-webhook-url" placeholder="https://hooks.slack.com/services/..." style="width: 100%;">
+      <small style="color: #666; font-size: 12px;">巡回成功時の heartbeat 用。エラー用とは別 Incoming Webhook を推奨（任意）</small>
     </div>
     <div style="margin-top: 12px;">
       <button type="button" id="save-notification-button" style="background: #1a73e8;">通知設定を保存</button>

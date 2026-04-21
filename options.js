@@ -80,6 +80,10 @@ async function loadSites() {
   if (slackWebhookUrlInput) {
     slackWebhookUrlInput.value = settings.slackWebhookUrl || '';
   }
+  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
+  if (slackSuccessWebhookUrlInput) {
+    slackSuccessWebhookUrlInput.value = settings.slackSuccessWebhookUrl || '';
+  }
   
   const container = document.getElementById('sites-container');
   container.innerHTML = '';
@@ -422,6 +426,7 @@ const DEFAULT_SITE = {
  */
 function applySlackWebhookFromForm(settings) {
   const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
+  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
   if (!slackWebhookUrlInput) {
     return true;
   }
@@ -431,11 +436,25 @@ function applySlackWebhookFromForm(settings) {
       new URL(slackWebhookUrl);
       settings.slackWebhookUrl = slackWebhookUrl;
     } catch {
-      alert('Slack Webhook URLの形式が正しくありません。');
+      alert('Slack Webhook URL（失敗・0件時）の形式が正しくありません。');
       return false;
     }
   } else {
     delete settings.slackWebhookUrl;
+  }
+  if (slackSuccessWebhookUrlInput) {
+    const successUrl = slackSuccessWebhookUrlInput.value.trim();
+    if (successUrl) {
+      try {
+        new URL(successUrl);
+        settings.slackSuccessWebhookUrl = successUrl;
+      } catch {
+        alert('Slack Webhook URL（成功・稼働確認）の形式が正しくありません。');
+        return false;
+      }
+    } else {
+      delete settings.slackSuccessWebhookUrl;
+    }
   }
   return true;
 }
