@@ -1,869 +1,295 @@
 /**
- * Notion APIのレート制限対応待機時間（ミリ秒）
- * Notion APIのレート制限は3リクエスト/秒のため、350ms待機
+ * X ブックマーク一覧から未処理ポストを収集する（本命アダプタ）。
+ *
+ * 旧 Notion 連携実装は廃止済み。
+ * Service Worker がタブ連携で ChatGPT Project / X 記事ページと組み合わせる前提。
  */
-const NOTION_API_RATE_LIMIT_DELAY_MS = 350;
 
-/**
- * レート制限エラー（429）の最大再試行回数
- */
-const MAX_RETRY_COUNT = 3;
-
-/**
- * 引用RTの最大再帰階層数（固定値）
- */
-const MAX_QUOTE_DEPTH = 5;
-
-/**
- * Twitterメディア画像URLのプレフィックス
- */
+const LOG_PREFIX = '[サイト巡回]';
+const SITE_ID = 'x-bookmarks';
+const MAX_POSTS_PER_RUN = 3;
+const MAX_SCROLL_STEPS = 120;
+const MAX_STALL_COUNT = 3;
+const SCROLL_WAIT_MS = 1200;
 const TWITTER_MEDIA_URL_PREFIX = 'https://pbs.twimg.com/media/';
 
-/**
- * エラーメッセージの最大文字数
- */
-const MAX_ERROR_MESSAGE_LENGTH = 200;
+async function collect_x_bookmarks(site = {}) {
+  console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
 
-/**
- * サイト別データ抽出アダプタ関数
- * 
- * xのブックマークに追加されたものを取得
- * ローカルLLMでブックマークしたポストの内容を調査
- * Notionの気になるツールDBに内容を保存
- * (https://www.notion.so/9811105a3e684424b437e5c81c518395?source=copy_link)
- * その内容をSlackにも送信
- * 
- * @returns {Promise<Object>} 抽出したデータ（サイト別の形式）
- */
-async function collect_x_bookmarks() {
-  // Phase 2: ツイート抽出とNotion API送信統合
-  // Phase 3: 引用RTの基本対応（URLとツイートIDのみ保存）
-  // Phase 4: 引用RTの再帰的取得
-  
-  // 1. DOMから全ツイート要素を取得
-  const tweetElements = extractTweetElements();
-  
-  if (tweetElements.length === 0) {
-    console.warn('ツイート要素が見つかりませんでした');
-    return { tweets: [] };
+  const processedTweetIds = site.processedTweetIds || {};
+  const processedSet = new Set(Object.keys(processedTweetIds));
+  const collected = new Map();
+  const visibleOrder = [];
+  let reachedProcessedPost = false;
+  let reachedScrollEnd = false;
+
+  let stallCount = 0;
+  let prevScrollY = -1;
+  let prevScrollHeight = -1;
+  let prevTweetCount = 0;
+
+  for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
+    const visiblePosts = collectVisiblePosts();
+    for (const post of visiblePosts) {
+      if (!post.tweetId) continue;
+      if (!collected.has(post.tweetId)) {
+        collected.set(post.tweetId, post);
+        visibleOrder.push(post.tweetId);
+      }
+      if (processedSet.has(post.tweetId)) {
+        reachedProcessedPost = true;
+      }
+    }
+
+    if (reachedProcessedPost) {
+      console.log(`${LOG_PREFIX} ${SITE_ID} 処理済みポスト検出 scrollStep=${step}`);
+      break;
+    }
+
+    window.scrollTo(0, document.body.scrollHeight);
+    await sleep(SCROLL_WAIT_MS);
+
+    const currentScrollY = window.scrollY;
+    const currentScrollHeight = document.body.scrollHeight;
+    const currentTweetCount = collected.size;
+    const scrollNotMoved = Math.abs(currentScrollY - prevScrollY) < 10;
+    const heightNotChanged = Math.abs(currentScrollHeight - prevScrollHeight) < 10;
+    const tweetsNotIncreased = currentTweetCount === prevTweetCount;
+
+    if (scrollNotMoved && heightNotChanged && tweetsNotIncreased) {
+      stallCount += 1;
+    } else {
+      stallCount = 0;
+    }
+
+    console.log(`${LOG_PREFIX} ${SITE_ID} スクロール ${step + 1}/${MAX_SCROLL_STEPS} 収集=${currentTweetCount} stall=${stallCount}`);
+
+    if (stallCount >= MAX_STALL_COUNT) {
+      reachedScrollEnd = true;
+      console.log(`${LOG_PREFIX} ${SITE_ID} これ以上スクロールできないと判定`);
+      break;
+    }
+
+    prevScrollY = currentScrollY;
+    prevScrollHeight = currentScrollHeight;
+    prevTweetCount = currentTweetCount;
   }
-  
-  // 2. ツイートID→要素のMapを構築（効率的な検索のため）
+
+  const orderedPosts = visibleOrder.map((tweetId) => collected.get(tweetId)).filter(Boolean);
+  const unprocessed = orderedPosts.filter((post) => !processedSet.has(post.tweetId));
+  const posts = unprocessed.reverse().slice(0, MAX_POSTS_PER_RUN);
+
+  const mockLabel = window.__COLLECT_MOCK_MODE__ === true ? ' モック' : '';
+  console.log(`${LOG_PREFIX} ${SITE_ID} 完了 収集=${collected.size} 未処理=${unprocessed.length} 処理対象=${posts.length}${mockLabel}`);
+
+  return {
+    posts,
+    reachedProcessedPost,
+    reachedScrollEnd,
+    scrollStepsLimit: MAX_SCROLL_STEPS,
+    collectedCount: collected.size,
+    unprocessedCount: unprocessed.length
+  };
+}
+
+function collectVisiblePosts() {
+  const elements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
   const tweetIdMap = new Map();
-  for (const element of tweetElements) {
+  for (const element of elements) {
     const tweetId = extractTweetId(element);
-    if (tweetId) {
-      tweetIdMap.set(tweetId, element);
-    }
+    if (tweetId) tweetIdMap.set(tweetId, element);
   }
-  
-  // 3. 各ツイートから基本情報を抽出（重複チェック付き）
-  // Phase 4: 引用RTの再帰的取得のために、ツイートIDのMapを渡す
-  const tweets = [];
-  const seenTweetIds = new Set(); // 重複チェック用
-  
-  for (const element of tweetElements) {
-    try {
-      const tweetData = extractTweetBasicData(element, tweetIdMap);
-      if (tweetData && !seenTweetIds.has(tweetData.tweetId)) {
-        seenTweetIds.add(tweetData.tweetId);
-        tweets.push(tweetData);
-      }
-    } catch (error) {
-      console.warn('ツイート抽出エラー:', error);
-      // 個別ツイートのエラーはスキップして続行
-    }
+
+  const posts = [];
+  for (const element of elements) {
+    const post = extractPost(element, tweetIdMap);
+    if (post) posts.push(post);
   }
-  
-  // 4. 設定を取得（モックモード時は設定を取得しない）
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
-  let config = null;
-  
-  if (!mockMode) {
-    // 通常モード: 設定を取得
-    const result = await chrome.storage.local.get('settings');
-    const settings = result.settings || {};
-    const siteSettings = settings.sites?.['x-bookmarks'] || {};
-    
-    const notionApiKey = siteSettings.notionApiKey;
-    const notionDatabaseId = siteSettings.notionDatabaseId;
-    
-    // API Key/Database IDの検証（空文字列や空白のみもチェック）
-    if (!notionApiKey || !notionDatabaseId || 
-        notionApiKey.trim() === '' || notionDatabaseId.trim() === '') {
-      throw new Error('Notion API KeyまたはDatabase IDが設定されていません');
-    }
-    
-    config = {
-      notionApiKey: notionApiKey.trim(),
-      notionDatabaseId: notionDatabaseId.trim()
-    };
-  }
-  
-  // 5. 各ツイートをNotion APIに送信（モックモード時もsendTweetToNotionを呼び出す）
-  for (const tweet of tweets) {
-    try {
-      // モックモード時はconfigがnullでもsendTweetToNotion内で処理される
-      await sendTweetToNotionWithRetry(tweet, config);
-      // レート制限対応: 待機
-      await new Promise(resolve => setTimeout(resolve, NOTION_API_RATE_LIMIT_DELAY_MS));
-    } catch (error) {
-      // 認証エラー（401）の場合は全体を失敗としてthrow
-      if (error.message && error.message.includes('認証エラー')) {
-        throw error;
-      }
-      // その他のエラーは個別ツイートをスキップして続行
-      console.warn('ツイート送信エラー:', error.message);
-    }
-  }
-  
-  return { tweets };
+  return posts;
 }
 
-/**
- * DOMからツイート要素を抽出する
- * 
- * @returns {NodeListOf<Element>} ツイート要素のリスト
- */
-function extractTweetElements() {
-  return document.querySelectorAll('article[data-testid="tweet"]');
-}
-
-/**
- * 各ツイートから基本情報を抽出する
- * 
- * @param {Element} tweetElement - ツイート要素（article[data-testid="tweet"]）
- * @param {Map<string, Element>} tweetIdMap - ツイートID→要素のMap（Phase 4: 引用RTの再帰的取得用）
- * @param {number} quoteDepth - 現在の引用階層（デフォルト: 0）
- * @param {Set<string>} processedIds - 処理済みツイートIDのセット（循環参照検出用、デフォルト: 空のSet）
- * @returns {Object|null} ツイートデータオブジェクト（抽出失敗時はnull）
- */
-function extractTweetBasicData(tweetElement, tweetIdMap = null, quoteDepth = 0, processedIds = new Set()) {
-  // 2.1 ツイートIDの抽出
+function extractPost(tweetElement, tweetIdMap = new Map()) {
   const tweetId = extractTweetId(tweetElement);
-  if (!tweetId) {
-    return null;
-  }
-  
-  // 循環参照検出: 既に処理中のツイートIDの場合はnullを返す
-  if (processedIds.has(tweetId)) {
-    return null;
-  }
-  
-  // 処理済みIDセットに追加
-  const currentProcessedIds = new Set(processedIds);
-  currentProcessedIds.add(tweetId);
-  
-  // 2.2 ツイートURLの生成
-  const url = extractTweetUrl(tweetElement, tweetId);
-  
-  // 2.3 ツイート本文の抽出
-  const text = extractTweetText(tweetElement);
-  
-  // 2.4 投稿者情報の抽出
-  const author = extractAuthorInfo(tweetElement);
-  
-  // 2.5 投稿日時の抽出
-  const postedAt = extractPostedAt(tweetElement);
-  
-  // 2.6 画像URLの抽出（Phase 5）
-  const images = extractTweetImages(tweetElement);
-  
-  // 2.7 引用RTの抽出（Phase 4: 再帰的取得対応）
-  const quotedTweet = extractQuotedTweet(tweetElement, tweetIdMap, quoteDepth, currentProcessedIds);
-  
+  if (!tweetId) return null;
   return {
     tweetId,
-    url,
-    text,
-    author,
-    postedAt,
-    images,
-    quotedTweet
+    url: extractTweetUrl(tweetElement, tweetId),
+    text: extractTweetText(tweetElement),
+    author: extractAuthorInfo(tweetElement),
+    postedAt: extractPostedAt(tweetElement),
+    imageUrls: extractTweetImageUrls(tweetElement),
+    externalLinks: extractExternalLinks(tweetElement),
+    xArticleUrls: extractXArticleUrls(tweetElement),
+    quotedPost: extractQuotedPost(tweetElement, tweetIdMap)
   };
 }
 
-/**
- * ツイートIDを抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string|null} ツイートID（抽出失敗時はnull）
- */
 function extractTweetId(tweetElement) {
-  // href="/username/status/{tweetId}"形式のリンクから抽出
   const links = tweetElement.querySelectorAll('a[href*="/status/"]');
   for (const link of links) {
-    const href = link.getAttribute('href');
-    if (href) {
-      const match = href.match(/\/status\/(\d+)/);
-      if (match && match[1]) {
-        return match[1];
-      }
-    }
+    const href = link.getAttribute('href') || '';
+    const match = href.match(/\/status\/(\d+)/);
+    if (match?.[1]) return match[1];
   }
   return null;
 }
 
-/**
- * ツイートURLを生成する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @param {string} tweetId - ツイートID
- * @returns {string} ツイートURL
- */
 function extractTweetUrl(tweetElement, tweetId) {
-  // スクリーンネームを取得
   const screenName = extractScreenName(tweetElement);
-  if (screenName) {
-    return buildTweetUrl(`/${screenName}/status/${tweetId}`, tweetId);
-  }
-  // スクリーンネームが取得できない場合はIDのみ
-  return buildTweetUrl('', tweetId);
-}
-
-/**
- * ツイート本文を抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string} ツイート本文（HTMLタグを除去したプレーンテキスト）
- */
-function extractTweetText(tweetElement) {
-  const textElement = tweetElement.querySelector('[data-testid="tweetText"]');
-  if (!textElement) {
-    return '';
-  }
-  
-  // HTMLタグを除去してプレーンテキストに変換
-  return textElement.innerText || textElement.textContent || '';
-}
-
-/**
- * 投稿者情報を抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {Object} 投稿者情報オブジェクト
- */
-function extractAuthorInfo(tweetElement) {
-  const userElement = tweetElement.querySelector('[data-testid="User-Name"]');
-  
-  // 表示名の取得
-  let displayName = '';
-  if (userElement) {
-    const nameElement = userElement.querySelector('span');
-    if (nameElement) {
-      displayName = nameElement.innerText || nameElement.textContent || '';
-    }
-  }
-  
-  // スクリーンネームの取得
-  const screenName = extractScreenName(tweetElement);
-  
-  // プロフィール画像URLの取得
-  const profileImageUrl = extractProfileImageUrl(tweetElement);
-  
-  return {
-    displayName: displayName.trim(),
-    screenName: screenName || '',
-    profileImageUrl: profileImageUrl || ''
-  };
-}
-
-/**
- * スクリーンネームを抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string|null} スクリーンネーム（@を除く）
- */
-function extractScreenName(tweetElement) {
-  // User-Name要素内のリンクを優先的に検索（誤抽出を防止）
-  const userElement = tweetElement.querySelector('[data-testid="User-Name"]');
-  if (userElement) {
-    const link = userElement.querySelector('a[href^="/"]');
-    if (link) {
-      const href = link.getAttribute('href');
-      if (href) {
-        const match = href.match(/^\/([^\/]+)$/);
-        if (match && match[1] && !match[1].includes('status')) {
-          return match[1];
-        }
-      }
-    }
-  }
-  
-  // フォールバック: @username形式のリンクから抽出
-  const links = tweetElement.querySelectorAll('a[href^="/"]');
-  for (const link of links) {
-    const href = link.getAttribute('href');
-    const text = link.innerText || link.textContent || '';
-    
-    // hrefが"/username"形式で、textが"@username"形式の場合
-    if (href && href.startsWith('/') && !href.includes('/status/') && text.startsWith('@')) {
-      const match = href.match(/^\/([^\/]+)$/);
-      if (match && match[1]) {
-        return match[1];
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * プロフィール画像URLを抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string|null} プロフィール画像URL
- */
-function extractProfileImageUrl(tweetElement) {
-  const avatarElement = tweetElement.querySelector('[data-testid="UserAvatar"]');
-  if (avatarElement) {
-    const img = avatarElement.querySelector('img');
-    if (img && img.src) {
-      return img.src;
-    }
-  }
-  return null;
-}
-
-/**
- * 投稿日時を抽出する
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string} ISO 8601形式の日時文字列
- */
-function extractPostedAt(tweetElement) {
-  const timeElement = tweetElement.querySelector('time[datetime]');
-  if (timeElement) {
-    const datetime = timeElement.getAttribute('datetime');
-    if (datetime) {
-      // 有効な日時か検証
-      const date = new Date(datetime);
-      if (!isNaN(date.getTime())) {
-        return datetime;
-      }
-    }
-  }
-  // 日時が取得できない場合は現在時刻を使用
-  return new Date().toISOString();
-}
-
-/**
- * ツイート内の画像URLを抽出する（Phase 5）
- * 
- * @param {Element} tweetElement - ツイート要素
- * @returns {string[]} 画像URLの配列（画像がない場合は空配列）
- */
-function extractTweetImages(tweetElement) {
-  const images = [];
-  const seenUrls = new Set(); // 重複チェック用Set（パフォーマンス向上）
-  
-  // プロフィール画像を除外するための要素を事前に取得（パフォーマンス向上）
-  const avatarElement = tweetElement.querySelector('[data-testid="UserAvatar"]');
-  
-  // ツイート内の全てのimg要素を取得
-  const imgElements = tweetElement.querySelectorAll('img');
-  
-  for (const img of imgElements) {
-    const src = img.getAttribute('src');
-    if (!src) {
-      continue;
-    }
-    
-    // プロフィール画像を除外
-    // 1. [data-testid="UserAvatar"]要素内の画像は除外
-    if (avatarElement && avatarElement.contains(img)) {
-      continue;
-    }
-    
-    // 2. profile_imagesを含むURLは除外
-    if (src.includes('profile_images') || src.includes('profile_banners')) {
-      continue;
-    }
-    
-    // 3. https://pbs.twimg.com/media/で始まる画像URLのみを抽出
-    if (src.startsWith(TWITTER_MEDIA_URL_PREFIX)) {
-      // 重複チェック（Setを使用してパフォーマンス向上）
-      if (!seenUrls.has(src)) {
-        seenUrls.add(src);
-        images.push(src);
-      }
-    }
-  }
-  
-  return images;
-}
-
-/**
- * ツイートURLを生成する（共通関数）
- * 
- * @param {string} href - href属性の値
- * @param {string} tweetId - ツイートID
- * @returns {string} 完全なツイートURL
- */
-function buildTweetUrl(href, tweetId) {
-  if (!href || !tweetId) {
-    return `https://x.com/i/web/status/${tweetId || ''}`;
-  }
-  
-  if (href.startsWith('http')) {
-    // 既に完全なURLの場合
-    return href;
-  }
-  
-  if (href.startsWith('/')) {
-    // 相対パスの場合
-    const screenNameMatch = href.match(/^\/([^\/]+)\/status\//);
-    if (screenNameMatch && screenNameMatch[1]) {
-      return `https://x.com${href}`;
-    }
-    // スクリーンネームが取得できない場合はIDのみ
-    return `https://x.com/i/web/status/${tweetId}`;
-  }
-  
-  // その他の形式の場合はIDのみ
+  if (screenName) return `https://x.com/${screenName}/status/${tweetId}`;
   return `https://x.com/i/web/status/${tweetId}`;
 }
 
-/**
- * 引用RTを抽出する（Phase 4: 再帰的取得対応）
- * 
- * @param {Element} tweetElement - ツイート要素
- * @param {Map<string, Element>|null} tweetIdMap - ツイートID→要素のMap（同じページ内検索用）
- * @param {number} quoteDepth - 現在の引用階層（再帰制限用、デフォルト: 0）
- * @param {Set<string>} processedIds - 処理済みツイートIDのセット（循環参照検出用）
- * @returns {Object|null} 引用RTデータオブジェクト（引用RTがない場合はnull）
- */
-function extractQuotedTweet(tweetElement, tweetIdMap = null, quoteDepth = 0, processedIds = new Set()) {
-  try {
-    // 引用RTの判定: [data-testid="card.wrapper"]が存在する場合
-    const cardWrapper = tweetElement.querySelector('[data-testid="card.wrapper"]');
-    if (!cardWrapper) {
-      return null;
-    }
-    
-    // 引用RT内のリンクから元ツイートのURLとツイートIDを抽出
-    // 通常は1つのリンクのみだが、最初に見つかったものを使用
-    const links = cardWrapper.querySelectorAll('a[href*="/status/"]');
-    for (const link of links) {
-      const href = link.getAttribute('href');
-      if (!href) {
-        continue;
-      }
-      
-      const match = href.match(/\/status\/(\d+)/);
-      if (!match || !match[1]) {
-        continue;
-      }
-      
-      const quotedTweetId = match[1];
-      const quotedUrl = buildTweetUrl(href, quotedTweetId);
-      
-      // 循環参照検出: 既に処理中のツイートIDの場合はURLとIDのみを返す
-      if (processedIds.has(quotedTweetId)) {
-        console.warn(`循環参照を検出しました: ツイートID ${quotedTweetId}`);
-        return {
-          tweetId: quotedTweetId,
-          url: quotedUrl
-        };
-      }
-      
-      // Phase 4: 再帰的取得の実装
-      // 最大階層に達している場合は、URLとIDのみを返す
-      if (quoteDepth >= MAX_QUOTE_DEPTH) {
-        return {
-          tweetId: quotedTweetId,
-          url: quotedUrl
-        };
-      }
-      
-      // 同じページ内で元ツイートを検索
-      if (tweetIdMap && tweetIdMap.has(quotedTweetId)) {
-        const quotedTweetElement = tweetIdMap.get(quotedTweetId);
-        
-        if (quotedTweetElement) {
-          try {
-            // 循環参照検出のため、quotedTweetIdをprocessedIdsに追加した新しいSetを作成
-            const currentProcessedIds = new Set(processedIds);
-            currentProcessedIds.add(quotedTweetId);
-            
-            // 見つかった場合は詳細情報を抽出（再帰的に）
-            const quotedTweetData = extractTweetBasicData(
-              quotedTweetElement, 
-              tweetIdMap, 
-              quoteDepth + 1,
-              currentProcessedIds
-            );
-            
-            if (quotedTweetData) {
-              return {
-                tweetId: quotedTweetData.tweetId,
-                url: quotedTweetData.url,
-                text: quotedTweetData.text,
-                author: quotedTweetData.author,
-                postedAt: quotedTweetData.postedAt,
-                quotedTweet: quotedTweetData.quotedTweet // 再帰的に引用RTも取得
-              };
-            }
-          } catch (error) {
-            console.warn('引用RTの詳細情報抽出エラー:', error);
-            // エラー時はURLとIDのみを返す
-            return {
-              tweetId: quotedTweetId,
-              url: quotedUrl
-            };
-          }
-        }
-      }
-      
-      // 見つからない場合は、Phase 3と同様にURLとIDのみを返す
-      return {
-        tweetId: quotedTweetId,
-        url: quotedUrl
-      };
-    }
-    
-    return null;
-  } catch (error) {
-    console.warn('引用RT抽出エラー:', error);
-    return null; // エラー時は引用RTなしとして扱う
-  }
+function extractTweetText(tweetElement) {
+  const textElement = tweetElement.querySelector('[data-testid="tweetText"]');
+  return (textElement?.innerText || textElement?.textContent || '').trim();
 }
 
-
-/**
- * Notion APIにツイートを送信する関数（リトライ機能付き）
- * 
- * @param {Object} tweetData - 抽出したツイートデータオブジェクト
- * @param {Object} config - 設定オブジェクト（notionApiKey, notionDatabaseId）
- * @param {number} retryCount - 現在のリトライ回数（デフォルト: 0）
- * @returns {Promise<void>} 成功時はresolve、エラー時はthrow
- */
-async function sendTweetToNotionWithRetry(tweetData, config, retryCount = 0) {
-  try {
-    await sendTweetToNotion(tweetData, config);
-  } catch (error) {
-    // レート制限エラー（429）の場合は再試行
-    if (error.message && error.message.includes('レート制限エラー') && retryCount < MAX_RETRY_COUNT) {
-      // エラーメッセージから待機時間を抽出
-      const waitTimeMatch = error.message.match(/(\d+)ms/);
-      const waitTime = waitTimeMatch ? parseInt(waitTimeMatch[1], 10) : 1000;
-      
-      // 待機時間が有効な数値か確認
-      if (!isNaN(waitTime) && waitTime > 0) {
-        console.warn(`レート制限エラー: ${waitTime}ms待機後に再試行します (${retryCount + 1}/${MAX_RETRY_COUNT})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        return sendTweetToNotionWithRetry(tweetData, config, retryCount + 1);
-      }
-    }
-    // 再試行できない場合はエラーをthrow
-    throw error;
-  }
+function extractAuthorInfo(tweetElement) {
+  const userElement = tweetElement.querySelector('[data-testid="User-Name"]');
+  const displayName = (
+    userElement?.querySelector('span')?.innerText ||
+    userElement?.querySelector('span')?.textContent ||
+    ''
+  ).trim();
+  const screenName = extractScreenName(tweetElement) || '';
+  return { displayName, screenName };
 }
 
-/**
- * Notion APIにツイートを送信する関数
- * 
- * @param {Object} tweetData - 抽出したツイートデータオブジェクト
- * @param {Object} config - 設定オブジェクト（notionApiKey, notionDatabaseId）
- * @returns {Promise<void>} 成功時はresolve、エラー時はthrow
- */
-async function sendTweetToNotion(tweetData, config) {
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
-  
-  // モックモード時はAPI Keyがなくてもコンソール表示まで実行
-  if (mockMode) {
-    const mockConfig = {
-      notionApiKey: '[REDACTED]',
-      notionDatabaseId: '[MOCK_DATABASE_ID]'
-    };
-    
-    const requestBody = buildNotionRequest(tweetData, mockConfig);
-    
-    console.log('=== モックモード: Notion API送信内容 ===');
-    console.log('URL: https://api.notion.com/v1/pages');
-    console.log('Method: POST');
-    console.log('Headers:', {
-      'Authorization': 'Bearer [REDACTED]',
-      'Notion-Version': '2022-06-28',
-      'Content-Type': 'application/json'
-    });
-    console.log('Body:', JSON.stringify(requestBody, null, 2));
-    
-    // chrome.runtime.sendMessageでMOCK_LOGメッセージを送信
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({
-        type: 'MOCK_LOG',
-        data: {
-          notionRequest: {
-            url: 'https://api.notion.com/v1/pages',
-            method: 'POST',
-            body: requestBody
-          }
-        }
-      }).catch(() => {
-        // エラーは無視
-      });
+function extractScreenName(tweetElement) {
+  const userElement = tweetElement.querySelector('[data-testid="User-Name"]');
+  const links = userElement ? userElement.querySelectorAll('a[href^="/"]') : tweetElement.querySelectorAll('a[href^="/"]');
+  for (const link of links) {
+    const href = link.getAttribute('href') || '';
+    const text = link.innerText || link.textContent || '';
+    const match = href.match(/^\/([^\/]+)$/);
+    if (match?.[1] && !match[1].includes('status') && (text.includes('@') || userElement)) {
+      return match[1];
     }
-    
-    // モックモード時はエラーをthrowしない
-    return Promise.resolve({ result: 'ok', mock: true });
   }
-  
-  // 通常モード: 実際にNotion APIに送信
-  if (!config || !config.notionApiKey || !config.notionDatabaseId) {
-    throw new Error('Notion API KeyまたはDatabase IDが設定されていません');
-  }
-  
-  const requestBody = buildNotionRequest(tweetData, config);
-  
-  try {
-    const response = await fetch('https://api.notion.com/v1/pages', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.notionApiKey}`,
-        'Notion-Version': '2022-06-28',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
-    
-    if (!response.ok) {
-      let errorMessage = `Notion APIエラー (${response.status})`;
-      
-      // レスポンスボディを安全に読み込む（cloneしてから読み込む）
-      const responseClone = response.clone();
-      try {
-        const errorJson = await responseClone.json();
-        if (errorJson.message) {
-          errorMessage = `Notion APIエラー (${response.status}): ${errorJson.message}`;
-        }
-      } catch {
-        // JSONパース失敗時はテキストとして取得（サイズ制限付き）
-        try {
-          const errorText = await responseClone.text();
-          // エラーメッセージは最大文字数に制限
-          errorMessage = `Notion APIエラー (${response.status}): ${errorText.substring(0, MAX_ERROR_MESSAGE_LENGTH)}`;
-        } catch {
-          // テキスト読み込みも失敗した場合はステータスコードのみ
-          errorMessage = `Notion APIエラー (${response.status})`;
-        }
-      }
-      
-      // 認証エラー（401）の場合は全体を失敗としてthrow
-      if (response.status === 401) {
-        throw new Error('認証エラー: Notion API Keyが無効です');
-      }
-      
-      // レート制限エラー（429）の特別処理
-      if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        // parseIntの安全性を向上（Number.parseIntを使用し、フォールバック値を設定）
-        const retryAfterSeconds = retryAfter ? Number.parseInt(retryAfter, 10) : null;
-        const waitTime = (retryAfterSeconds && !isNaN(retryAfterSeconds) && retryAfterSeconds > 0) 
-          ? retryAfterSeconds * 1000 
-          : 1000;
-        throw new Error(`レート制限エラー: ${waitTime}ms後に再試行してください`);
-      }
-      
-      // その他のAPIエラー（400等）は個別ツイートをスキップ
-      throw new Error(errorMessage);
-    }
-    
-    // 成功
-    return;
-  } catch (error) {
-    // ネットワークエラーやその他のエラー
-    if (error.message && error.message.includes('認証エラー')) {
-      throw error; // 認証エラーは再throw
-    }
-    
-    // エラータイプを判定して詳細なメッセージを生成
-    let errorMessage = 'ネットワークエラー';
-    if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      errorMessage = 'ネットワーク接続エラー: インターネット接続を確認してください';
-    } else if (error.message) {
-      errorMessage = `ネットワークエラー: ${error.message}`;
-    }
-    
-    throw new Error(errorMessage);
-  }
+  return null;
 }
 
-/**
- * Notion APIリクエストボディを構築する
- * 
- * @param {Object} tweetData - ツイートデータオブジェクト
- * @param {Object} config - 設定オブジェクト（notionDatabaseId）
- * @returns {Object} Notion APIリクエストボディ
- */
-function buildNotionRequest(tweetData, config) {
-  // 引用RTデータのバリデーションとブロック構築
-  const quotedTweetBlocks = [];
-  
-  if (tweetData.quotedTweet) {
-    if (tweetData.quotedTweet.url && tweetData.quotedTweet.tweetId) {
-      // Phase 4: 引用RTブロック（再帰的取得対応）
-      const quoteBlock = buildQuotedTweetBlock(tweetData.quotedTweet);
-      if (quoteBlock) {
-        quotedTweetBlocks.push(quoteBlock);
-      }
-    } else {
-      console.warn('引用RTデータが不完全です:', tweetData.quotedTweet);
-    }
-  }
-  
-  // Phase 5: 画像ブロックの構築
-  const imageBlocks = [];
-  if (tweetData.images && Array.isArray(tweetData.images) && tweetData.images.length > 0) {
-    for (const imageUrl of tweetData.images) {
-      imageBlocks.push({
-        object: 'block',
-        type: 'image',
-        image: {
-          type: 'external',
-          external: {
-            url: imageUrl
-          }
-        }
-      });
-    }
-  }
-  
-  return {
-    parent: {
-      database_id: config.notionDatabaseId
-    },
-    properties: {
-      'Tweet ID': {
-        rich_text: [{
-          text: {
-            content: tweetData.tweetId
-          }
-        }]
-      },
-      'URL': {
-        url: tweetData.url
-      },
-      'Text': {
-        rich_text: [{
-          text: {
-            content: tweetData.text || ''
-          }
-        }]
-      },
-      'Author': {
-        rich_text: [{
-          text: {
-            content: `${tweetData.author.displayName} (@${tweetData.author.screenName})`
-          }
-        }]
-      },
-      'Posted At': {
-        date: {
-          start: tweetData.postedAt
-        }
-      }
-    },
-    children: [
-      // Phase 5: 画像ブロック
-      ...imageBlocks,
-      // Phase 4: 引用RTブロック（再帰的取得対応）
-      ...quotedTweetBlocks,
-    ]
-  };
+function extractPostedAt(tweetElement) {
+  const datetime = tweetElement.querySelector('time[datetime]')?.getAttribute('datetime') || null;
+  if (!datetime) return null;
+  const d = new Date(datetime);
+  return Number.isNaN(d.getTime()) ? null : datetime;
 }
 
-/**
- * 引用RTブロックを構築する（再帰的対応）
- * 
- * @param {Object} quotedTweet - 引用RTデータオブジェクト
- * @param {number} depth - 現在の再帰階層（デフォルト: 0）
- * @returns {Object|null} Notion APIのquoteブロックオブジェクト（構築失敗時はnull）
- */
-function buildQuotedTweetBlock(quotedTweet, depth = 0) {
-  if (!quotedTweet || !quotedTweet.url || !quotedTweet.tweetId) {
-    return null;
+function extractTweetImageUrls(tweetElement) {
+  const urls = [];
+  const seen = new Set();
+  const avatar = tweetElement.querySelector('[data-testid="UserAvatar"]');
+  for (const img of tweetElement.querySelectorAll('img')) {
+    const src = img.getAttribute('src') || '';
+    if (!src) continue;
+    if (avatar && avatar.contains(img)) continue;
+    if (src.includes('profile_images') || src.includes('profile_banners')) continue;
+    if (!src.startsWith(TWITTER_MEDIA_URL_PREFIX)) continue;
+    if (seen.has(src)) continue;
+    seen.add(src);
+    urls.push(src);
   }
-  
-  // 最大階層に達した場合はURLのみを返す
-  if (depth >= MAX_QUOTE_DEPTH) {
+  return urls;
+}
+
+function extractExternalLinks(tweetElement) {
+  const urls = [];
+  const seen = new Set();
+  for (const link of tweetElement.querySelectorAll('a[href]')) {
+    const href = link.href || link.getAttribute('href') || '';
+    if (!href) continue;
+    if (isXInternalUrl(href)) continue;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    urls.push(href);
+  }
+  return urls;
+}
+
+function extractXArticleUrls(tweetElement) {
+  const urls = [];
+  const seen = new Set();
+
+  // TODO: X内記事カードのDOMを実ページで確認して精度を上げる。
+  // 要件:
+  // - X内記事が貼られている場合、その記事ページに遷移できるURLを取得する。
+  // - 取得したURLはService Workerで別タブを開き、sites/x-article.jsで本文取得を試みる。
+  // - 記事本文取得に失敗しても、ポスト本文・ポストURL・記事URLだけでChatGPT送信を続行する。
+  // 実ページで確認する操作:
+  // 1. XブックマークでX内記事カード付きポストを開く。
+  // 2. 記事カードのa[href]、role、data-testid、aria-labelをDevToolsで確認する。
+  // 3. /i/article/、/articles/、/compose/articles/ など実際のURL形式を確認する。
+  // 4. 記事カードと通常の外部リンクカードを区別できる属性を確認する。
+  for (const link of tweetElement.querySelectorAll('a[href]')) {
+    const href = link.href || link.getAttribute('href') || '';
+    if (!href) continue;
+    if (!isXArticleUrl(href)) continue;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    urls.push(href);
+  }
+  return urls;
+}
+
+function extractQuotedPost(tweetElement, tweetIdMap) {
+  // TODO: 引用ポストのDOMを実ページで確認して完全反映する（card.wrapper 前提の限界あり）。
+  // 要件:
+  // - 引用リツイートだった場合は引用元も取得する（引用の引用は持たない）。
+  // - ブックマーク対象ポストと同様に externalLinks / xArticleUrls も引用要素から取る。
+  const card = tweetElement.querySelector('[data-testid="card.wrapper"]');
+  if (!card) return null;
+  const link = card.querySelector('a[href*="/status/"]');
+  const href = link?.getAttribute('href') || '';
+  const match = href.match(/\/status\/(\d+)/);
+  const tweetId = match?.[1] || null;
+  if (!tweetId) return null;
+  const fallbackUrl = href.startsWith('http') ? href : `https://x.com${href}`;
+  const quotedElement = tweetIdMap.get(tweetId);
+  if (!quotedElement || quotedElement === tweetElement) {
     return {
-      object: 'block',
-      type: 'quote',
-      quote: {
-        rich_text: [{
-          type: 'text',
-          text: {
-            content: quotedTweet.url,
-            link: {
-              url: quotedTweet.url
-            }
-          }
-        }]
-      }
+      tweetId,
+      url: fallbackUrl,
+      text: '',
+      author: null,
+      postedAt: null,
+      imageUrls: [],
+      externalLinks: [],
+      xArticleUrls: []
     };
   }
-  
-  const richText = [];
-  
-  // Phase 4: 詳細情報がある場合は表示
-  if (quotedTweet.text) {
-    // 引用RTの本文を追加
-    richText.push({
-      type: 'text',
-      text: {
-        content: quotedTweet.text
-      }
-    });
-    
-    // 改行を追加
-    richText.push({
-      type: 'text',
-      text: {
-        content: '\n'
-      }
-    });
-  }
-  
-  // 投稿者情報がある場合は追加
-  if (quotedTweet.author && quotedTweet.author.displayName) {
-    const authorText = quotedTweet.author.screenName 
-      ? `${quotedTweet.author.displayName} (@${quotedTweet.author.screenName})`
-      : quotedTweet.author.displayName;
-    
-    richText.push({
-      type: 'text',
-      text: {
-        content: `— ${authorText}\n`
-      }
-    });
-  }
-  
-  // URLをリンクとして追加
-  richText.push({
-    type: 'text',
-    text: {
-      content: quotedTweet.url,
-      link: {
-        url: quotedTweet.url
-      }
-    }
-  });
-  
-  const quoteBlock = {
-    object: 'block',
-    type: 'quote',
-    quote: {
-      rich_text: richText
-    }
+  return {
+    tweetId,
+    url: extractTweetUrl(quotedElement, tweetId),
+    text: extractTweetText(quotedElement),
+    author: extractAuthorInfo(quotedElement),
+    postedAt: extractPostedAt(quotedElement),
+    imageUrls: extractTweetImageUrls(quotedElement),
+    externalLinks: extractExternalLinks(quotedElement),
+    xArticleUrls: extractXArticleUrls(quotedElement)
   };
-  
-  // Phase 4: 再帰的に引用RTがある場合は、子ブロックとして追加（階層制限付き）
-  if (quotedTweet.quotedTweet) {
-    const nestedQuoteBlock = buildQuotedTweetBlock(quotedTweet.quotedTweet, depth + 1);
-    if (nestedQuoteBlock) {
-      quoteBlock.children = [nestedQuoteBlock];
-    }
+}
+
+function isXInternalUrl(url) {
+  try {
+    const u = new URL(url, location.href);
+    return ['x.com', 'twitter.com', 'www.x.com', 'www.twitter.com'].includes(u.hostname);
+  } catch (_) {
+    return false;
   }
-  
-  return quoteBlock;
+}
+
+function isXArticleUrl(url) {
+  try {
+    const u = new URL(url, location.href);
+    const isXHost = ['x.com', 'twitter.com', 'www.x.com', 'www.twitter.com'].includes(u.hostname);
+    return isXHost && (/\/i\/article\//.test(u.pathname) || /\/articles\//.test(u.pathname) || /\/compose\/articles\//.test(u.pathname));
+  } catch (_) {
+    return false;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

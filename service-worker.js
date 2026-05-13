@@ -44,6 +44,448 @@ async function initializeStorage() {
   return { settings: result.settings, state: result.state };
 }
 
+function slackWebhookFromSiteOrGlobal(site, settings) {
+  const s = (site?.slackWebhookUrl || '').trim();
+  if (s) return s;
+  return (settings?.slackWebhookUrl || '').trim();
+}
+
+async function persistSiteRunFailure(siteId, settings, site, now, error) {
+  const currentState = await chrome.storage.local.get('state');
+  if (!currentState.state) currentState.state = { bySite: {} };
+  if (!currentState.state.bySite) currentState.state.bySite = {};
+  const currentSiteState = currentState.state.bySite[siteId] || {};
+  let errorMessage = error.message || String(error);
+  errorMessage = errorMessage.replace(/password|token|secret|key|api[_-]?key/gi, '[REDACTED]');
+  errorMessage = errorMessage.substring(0, 100);
+  const failCount = (currentSiteState.failCount || 0) + 1;
+  currentState.state.bySite[siteId] = {
+    ...currentSiteState,
+    nextRun: computeNextRunAfterFail(now),
+    lastStatus: 'fail',
+    failCount,
+    lastRun: now,
+    lastError: errorMessage
+  };
+  await chrome.storage.local.set({ state: currentState.state });
+  const hook = slackWebhookFromSiteOrGlobal(site, settings);
+  if (hook) {
+    await notifySlackOnFailure(hook, {
+      siteId,
+      error: errorMessage,
+      failCount
+    });
+  }
+}
+
+function waitUntilTabComplete(tabId, timeoutSec) {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        chrome.tabs.onUpdated.removeListener(listener);
+        reject(new Error(`Timeout after ${timeoutSec} seconds`));
+      }
+    }, timeoutSec * 1000);
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete' && !resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs
+      .get(tabId)
+      .then((tabInfo) => {
+        if (tabInfo.status === 'complete' && !resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      })
+      .catch(() => {});
+  });
+}
+
+function assertInjectablePageUrl(tabUrl) {
+  if (
+    tabUrl.startsWith('chrome-extension://') ||
+    tabUrl.startsWith('chrome://') ||
+    tabUrl.startsWith('edge://') ||
+    tabUrl.startsWith('about:') ||
+    tabUrl.startsWith('data:') ||
+    tabUrl.startsWith('javascript:')
+  ) {
+    throw new Error(`Cannot inject content script into restricted URL: ${tabUrl}`);
+  }
+}
+
+/**
+ * 指定タブへ sites/{site}.js と content-script を注入し COLLECT を1回実行する。
+ *
+ * TODO: SPA遷移後の再injectが必要になるサイトが増えたら、ここに wait 戦略または再実行フックを追加する。
+ *
+ * @param {number} tabId
+ * @param {string} collectSiteId 例 x-bookmarks, x_article, chatgpt_project
+ */
+function injectAndCollect(tabId, collectSiteId, options) {
+  const { mockMode = false, collectContext, timeoutSec: rawTimeout } = options;
+  const timeoutSec =
+    typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 60;
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        chrome.runtime.onMessage.removeListener(messageListener);
+      }
+    };
+    const messageListener = (message, sender) => {
+      if (sender.tab?.id === tabId && message.type === 'COLLECT_RESULT' && !resolved) {
+        cleanup();
+        if (message.error) {
+          reject(new Error(message.error));
+        } else {
+          resolve(message.payload);
+        }
+      }
+      return undefined;
+    };
+    chrome.runtime.onMessage.addListener(messageListener);
+    const scriptPath = 'sites/' + collectSiteId.replace(/_/g, '-') + '.js';
+
+    chrome.scripting
+      .executeScript({
+        target: { tabId },
+        files: [scriptPath, 'content-script.js']
+      })
+      .then(() => {
+        let retries = 0;
+        const maxRetries = 5;
+        const trySendMessage = () => {
+          chrome.tabs
+            .sendMessage(tabId, {
+              type: 'COLLECT',
+              siteId: collectSiteId,
+              mockMode,
+              collectContext
+            })
+            .then((response) => {
+              if (response && response.type === 'COLLECT_RESULT' && !resolved) {
+                cleanup();
+                if (response.error) {
+                  reject(new Error(response.error));
+                } else {
+                  resolve(response.payload);
+                }
+              }
+            })
+            .catch((err) => {
+              if (retries < maxRetries && !resolved) {
+                retries++;
+                setTimeout(trySendMessage, 50);
+              } else {
+                cleanup();
+                reject(new Error(`Failed to send message to content script: ${err.message}`));
+              }
+            });
+        };
+        setTimeout(trySendMessage, 50);
+      })
+      .catch((err) => {
+        cleanup();
+        reject(new Error(`Failed to inject content script: ${err.message}`));
+      });
+
+    setTimeout(() => {
+      if (!resolved) {
+        cleanup();
+        reject(new Error('Content script timeout'));
+      }
+    }, Math.max(0, (timeoutSec - 5) * 1000));
+  });
+}
+
+/** 親ポストと引用のX記事リンクを統合する（順序維持・重複除去） */
+function mergeBookmarkXArticleUrls(post) {
+  const out = [];
+  const seen = new Set();
+  const append = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const u of arr) {
+      if (!u || typeof u !== 'string') continue;
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push(u);
+    }
+  };
+  append(post?.xArticleUrls);
+  append(post?.quotedPost?.xArticleUrls);
+  return out;
+}
+
+function stringifyQuotedSnippet(quoted) {
+  if (!quoted) return '';
+  const bits = [];
+  bits.push(`TweetID: ${quoted.tweetId || ''}`);
+  bits.push(`URL: ${quoted.url || ''}`);
+  if (quoted.author) {
+    bits.push(`投稿者: ${quoted.author.displayName || ''} (@${quoted.author.screenName || ''})`);
+  }
+  if (quoted.postedAt) bits.push(`投稿日時: ${quoted.postedAt}`);
+  bits.push('');
+  bits.push(quoted.text ? quoted.text : '(本文なし / 未取得)');
+  if (quoted.imageUrls?.length) bits.push('', '画像:', quoted.imageUrls.join('\n'));
+  if (quoted.externalLinks?.length) bits.push('', '外部リンク:', quoted.externalLinks.join('\n'));
+  if (quoted.xArticleUrls?.length) bits.push('', 'X内記事:', quoted.xArticleUrls.join('\n'));
+  return bits.join('\n');
+}
+
+function fallbackTitleFromBookmarkPost(post) {
+  const sn = post?.author?.screenName ? `@${post.author.screenName}` : '';
+  const head =
+    post?.text && post.text.trim()
+      ? post.text.replace(/\s+/g, ' ').trim().slice(0, 72)
+      : post?.tweetId || 'X bookmark';
+  return [sn, head].filter(Boolean).join(' | ');
+}
+
+function buildXBookmarksChatgptPrompt(post, xArticleResults, promptPrefixFromSettings) {
+  const prefix =
+    (promptPrefixFromSettings && promptPrefixFromSettings.trim()) ||
+    'このポストの内容を理解しやすいように要約・解説してください。重要な論点や前提があれば補足してください。';
+  const parts = [];
+  parts.push(prefix);
+  parts.push('');
+  parts.push('--- メインポスト ---');
+  parts.push(`URL: ${post.url || ''}`);
+  parts.push(`TweetID: ${post.tweetId || ''}`);
+  if (post.author) {
+    parts.push(`投稿者: ${post.author.displayName || ''} (@${post.author.screenName || ''})`);
+  }
+  if (post.postedAt) parts.push(`投稿日時(ISO): ${post.postedAt}`);
+  parts.push('');
+  parts.push(post.text ? `本文:\n${post.text}` : '(本文なし)');
+  if (post.imageUrls?.length) {
+    parts.push('', '画像メディアURL:', post.imageUrls.join('\n'));
+  }
+  if (post.externalLinks?.length) {
+    parts.push('', '外部リンク:', post.externalLinks.join('\n'));
+  }
+  if (post.xArticleUrls?.length) parts.push('', 'X内記事URL（親）:', post.xArticleUrls.join('\n'));
+  if (post.quotedPost) {
+    parts.push('', '--- 引用元（引用の引用は収集しない） ---', stringifyQuotedSnippet(post.quotedPost));
+  }
+  parts.push('', '--- X記事ページ抽出結果 ---');
+  if (!xArticleResults || xArticleResults.length === 0) {
+    parts.push('（x-article で開くべき対象がありませんでした）');
+  } else {
+    for (let i = 0; i < xArticleResults.length; i++) {
+      const r = xArticleResults[i];
+      parts.push('', `[記事 ${i + 1}]`, `URL: ${r.url || ''}`);
+      if (r.ok && r.bodyText) {
+        parts.push(`タイトル: ${r.title || ''}`, `本文:\n${r.bodyText}`);
+      } else {
+        parts.push(`抽出失敗: ${r.error || '不明'}（sites/x-article.js のTODO/DOM確認待ちでよくある状態）`);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+async function persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, opts) {
+  const partialErrors = (opts && opts.partialErrors) || '';
+  const gotten = await chrome.storage.local.get('state');
+  const state = gotten.state && typeof gotten.state === 'object' ? gotten.state : { bySite: {} };
+  if (!state.bySite) state.bySite = {};
+  const prev = state.bySite[siteId] || {};
+  state.bySite[siteId] = {
+    ...prev,
+    processedTweetIds,
+    nextRun: computeNextRunAfterSuccess(now, site.schedule),
+    lastStatus: 'ok',
+    failCount: 0,
+    lastRun: now,
+    lastError: partialErrors ? partialErrors.substring(0, 100) : ''
+  };
+  await chrome.storage.local.set({ state });
+}
+
+/**
+ * Notion 等の旧フローを廃止し、ChatGPT Project へのマルチタブパイプラインで処理する。
+ * TODO: DOMまだ確認できていない箇所（x-article / chatgpt の実送信）はサイトスクリプト側のTODOのまま。
+ */
+async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) {
+  try {
+    const bookmarksUrl = (site.url || '').trim();
+    if (
+      bookmarksUrl.startsWith('chrome-extension://') ||
+      bookmarksUrl.startsWith('chrome://') ||
+      bookmarksUrl.startsWith('edge://') ||
+      bookmarksUrl.startsWith('about:') ||
+      bookmarksUrl.startsWith('data:') ||
+      bookmarksUrl.startsWith('javascript:')
+    ) {
+      throw new Error(`Invalid URL for bookmarks page: ${bookmarksUrl}`);
+    }
+    const chatgptProjectUrl = (site.chatgptProjectUrl || '').trim();
+    if (!chatgptProjectUrl || !isValidApiUrl(chatgptProjectUrl)) {
+      throw new Error(
+        'ChatGPT Project URLが未設定または不正です（サイトオプションの ChatGPT Project URL を設定してください）'
+      );
+    }
+
+    const pipelineTimeoutSec =
+      typeof site.timeoutSec === 'number' &&
+      Number.isFinite(site.timeoutSec) &&
+      site.timeoutSec > 0
+        ? site.timeoutSec
+        : 60;
+    /** ブックマーク一覧はスクロールが長めのため、COLLECT の打ち切りだけ余裕を持たせる */
+    const bookmarkCollectTimeoutSec = Math.max(pipelineTimeoutSec, 150);
+
+    let { state } = await chrome.storage.local.get('state');
+    const prevBucket = { ...(state.bySite[siteId] || {}) };
+    let processedTweetIds = { ...(prevBucket.processedTweetIds || {}) };
+
+    const bookmarksTabId = (await chrome.tabs.create({ url: bookmarksUrl, active: false })).id;
+    let posts = [];
+    try {
+      await waitUntilTabComplete(bookmarksTabId, pipelineTimeoutSec);
+      const bmTabMeta = await chrome.tabs.get(bookmarksTabId);
+      assertInjectablePageUrl(bmTabMeta.url || '');
+      const bmEnvelope = await injectAndCollect(bookmarksTabId, 'x-bookmarks', {
+        mockMode,
+        timeoutSec: bookmarkCollectTimeoutSec,
+        collectContext: { processedTweetIds }
+      });
+      posts = (bmEnvelope.payload && bmEnvelope.payload.posts) || [];
+    } finally {
+      try {
+        await chrome.tabs.remove(bookmarksTabId);
+      } catch (_) {}
+    }
+
+    if (posts.length === 0) {
+      await persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, { partialErrors: '' });
+      console.log(`Site ${siteId} bookmark pipeline: no new posts`);
+      return;
+    }
+
+    let okCount = 0;
+    const errors = [];
+
+    for (const post of posts) {
+      if (!post?.tweetId) continue;
+      try {
+        const articleUrls = mergeBookmarkXArticleUrls(post).filter((u) => /^https?:\/\//i.test(u));
+
+        /** @type {Array<Object>} */
+        const xArticleResults = [];
+
+        // TODO: 記事ページがクライアント描画で遅い場合は load 後のウェイトまたは MutationObserver 戦略を x-article 側またはここで追加する。
+
+        for (const articleUrl of articleUrls) {
+          const tabIdArticle = (await chrome.tabs.create({ url: articleUrl, active: false })).id;
+          try {
+            await waitUntilTabComplete(tabIdArticle, pipelineTimeoutSec);
+            const artTab = await chrome.tabs.get(tabIdArticle);
+            assertInjectablePageUrl(artTab.url || '');
+            const envelope = await injectAndCollect(tabIdArticle, 'x_article', {
+              mockMode,
+              timeoutSec: pipelineTimeoutSec,
+              collectContext: {}
+            });
+            xArticleResults.push(envelope.payload || {});
+          } catch (e) {
+            xArticleResults.push({ ok: false, error: e.message, url: articleUrl });
+          } finally {
+            try {
+              await chrome.tabs.remove(tabIdArticle);
+            } catch (_) {}
+          }
+        }
+
+        const prompt = buildXBookmarksChatgptPrompt(post, xArticleResults, site.promptPrefix);
+        const payloadForChatgpt = {
+          post,
+          xArticleResults,
+          prompt,
+          mockMode,
+          fallbackTitle: fallbackTitleFromBookmarkPost(post)
+        };
+
+        const gptTabId = (await chrome.tabs.create({ url: chatgptProjectUrl, active: false })).id;
+        try {
+          await waitUntilTabComplete(gptTabId, pipelineTimeoutSec);
+          const gpTabMeta = await chrome.tabs.get(gptTabId);
+          assertInjectablePageUrl(gpTabMeta.url || '');
+          const gptEnvelope = await injectAndCollect(gptTabId, 'chatgpt_project', {
+            mockMode,
+            timeoutSec: pipelineTimeoutSec,
+            collectContext: { __chatgptPostPayload: payloadForChatgpt }
+          });
+          const gptInner = gptEnvelope.payload || {};
+          if (!gptInner.ok && !gptInner.mock) {
+            throw new Error(gptInner.error || 'ChatGPT 側の処理が成功しませんでした');
+          }
+
+          processedTweetIds = {
+            ...processedTweetIds,
+            [post.tweetId]: {
+              processedAt: Date.now(),
+              conversationUrl: gptInner.conversationUrl ?? null,
+              title: gptInner.title ?? null
+            }
+          };
+
+          ({ state } = await chrome.storage.local.get('state'));
+          const pb = state.bySite[siteId] || {};
+          state.bySite[siteId] = { ...pb, processedTweetIds };
+          await chrome.storage.local.set({ state });
+
+          okCount++;
+        } finally {
+          try {
+            await chrome.tabs.remove(gptTabId);
+          } catch (_) {}
+        }
+      } catch (postErr) {
+        errors.push(`${post.tweetId}: ${postErr.message || String(postErr)}`);
+        console.error(`[${siteId}] post pipeline failed`, post.tweetId, postErr);
+      }
+    }
+
+    if (okCount === 0) {
+      const msg =
+        errors.join(' / ').substring(0, 250) ||
+        '取得したすべてのポストで ChatGPT パイプラインに失敗しました';
+      throw new Error(msg);
+    }
+
+    await persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, {
+      partialErrors: errors.length ? errors.join('; ').substring(0, 200) : ''
+    });
+
+    console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
+
+    const apiUrlTrim = site.apiUrl && site.apiUrl.trim();
+    if (apiUrlTrim) {
+      // TODO: ChatGPT と併せて外向き API にも載せたい場合は送信ペイロード形式を決めて実装する（現状はスキップ）。
+      console.warn(
+        `[${siteId}] site.apiUrl is set but x-bookmarks pipeline skips HTTP POST until payload contract is defined.`
+      );
+    }
+  } catch (error) {
+    await persistSiteRunFailure(siteId, settings, site, now, error);
+  }
+}
+
 /**
  * 1サイトの巡回処理を実行する
  * 
@@ -84,20 +526,30 @@ async function runSite(siteId, options = {}) {
   }
   
   const now = Date.now();
+
+  if (siteId === 'x-bookmarks') {
+    await runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now);
+    return;
+  }
+
   let tabId = null;
-  
-  // URL検証をタブ作成前に実行（早期エラー検出）
-  const siteUrl = site.url || '';
-  if (siteUrl.startsWith('chrome-extension://') || 
-      siteUrl.startsWith('chrome://') || 
+
+  try {
+    // URL検証をタブ作成前に実行（早期エラー検出）
+    const siteUrl = site.url || '';
+    if (
+      siteUrl.startsWith('chrome-extension://') ||
+      siteUrl.startsWith('chrome://') ||
       siteUrl.startsWith('edge://') ||
       siteUrl.startsWith('about:') ||
       siteUrl.startsWith('data:') ||
-      siteUrl.startsWith('javascript:')) {
-    throw new Error(`Invalid URL for content script injection: ${siteUrl}. Please use a valid HTTP/HTTPS URL.`);
-  }
-  
-  try {
+      siteUrl.startsWith('javascript:')
+    ) {
+      throw new Error(
+        `Invalid URL for content script injection: ${siteUrl}. Please use a valid HTTP/HTTPS URL.`
+      );
+    }
+
     const tab = await chrome.tabs.create({ url: site.url, active: false });
     tabId = tab.id;
     
@@ -273,35 +725,7 @@ async function runSite(siteId, options = {}) {
     
   } catch (error) {
     console.error(`Error processing site ${siteId}:`, error);
-    
-    const currentState = await chrome.storage.local.get('state');
-    const currentSiteState = currentState.state.bySite[siteId] || {};
-    
-    // エラーメッセージに機密情報（APIキー等）が含まれる可能性があるため、
-    // 保存前にサニタイズしてから100文字に制限
-    let errorMessage = error.message || String(error);
-    errorMessage = errorMessage.replace(/password|token|secret|key|api[_-]?key/gi, '[REDACTED]');
-    errorMessage = errorMessage.substring(0, 100);
-    
-    const failCount = (currentSiteState.failCount || 0) + 1;
-    
-    currentState.state.bySite[siteId] = {
-      nextRun: computeNextRunAfterFail(now),
-      lastStatus: 'fail',
-      failCount: failCount,
-      lastRun: now,
-      lastError: errorMessage
-    };
-    await chrome.storage.local.set({ state: currentState.state });
-    
-    // Slack 通知（設定されていれば）
-    if (settings?.slackWebhookUrl) {
-      await notifySlackOnFailure(settings.slackWebhookUrl, {
-        siteId,
-        error: errorMessage,
-        failCount
-      });
-    }
+    await persistSiteRunFailure(siteId, settings, site, now, error);
   } finally {
     // タブは必ず閉じる（finallyで確実に実行）
     // タブが既に閉じられている場合のエラーは無視

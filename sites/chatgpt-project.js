@@ -45,6 +45,7 @@ async function collect_chatgpt_project(site = {}) {
     promptPreview: payload.prompt.slice(0, 300)
   });
 
+  // 本送信実装後は必ず ok:boolean を返すこと（SW の x-bookmarks パイプラインが参照する）。
   if (payload.mockMode) {
     return {
       ok: true,

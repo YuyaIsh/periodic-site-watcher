@@ -1,6 +1,10 @@
 const X_ARTICLE_LOG_PREFIX = '[サイト巡回] x-bookmarks article';
 
-async function collect_x_article() {
+/**
+ * DOM 未取得のフェーズでは常に TODO エラーとなる。将来 ok:true と bodyText 等を返す。
+ * @param {Object} [_site]
+ */
+async function collect_x_article(_site = {}) {
   console.log(`${X_ARTICLE_LOG_PREFIX} 取得開始`);
 
   // TODO: X内記事ページのDOMを実ページで確認して実装する。
