@@ -28,6 +28,28 @@ function isValidApiUrl(url) {
 }
 
 /**
+ * 手動「ローカル」実行時に POST 先とするオリジン（サイトに設定した API URL の pathname + search を付ける）
+ * ポートを変えたい場合はこの定数だけ変える。
+ */
+const LOCAL_MANUAL_API_ORIGIN = 'http://localhost:3000';
+
+/**
+ * 設定済み API 完全 URL の pathname + search を、上記ローカルオリジンに載せ替えた URL を返す。
+ *
+ * @param {string} configuredFullUrl - オプションに保存している API の完全 URL
+ * @returns {string} 実効 URL
+ * @throws {Error} configuredFullUrl が無効な場合
+ */
+function resolveLocalApiUrl(configuredFullUrl) {
+  if (!isValidApiUrl(configuredFullUrl)) {
+    throw new Error('Invalid configured API URL');
+  }
+  const configured = new URL(configuredFullUrl.trim());
+  const base = new URL(LOCAL_MANUAL_API_ORIGIN);
+  return new URL(base.origin + configured.pathname + configured.search).href;
+}
+
+/**
  * 時刻形式のバリデーション（HH:MM）
  * 
  * 正規表現で形式をチェックし、さらに数値範囲（0-23時、0-59分）を検証する。

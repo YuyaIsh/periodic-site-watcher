@@ -5,7 +5,23 @@
  * API側の処理: externalIdで照合して保存されていないもののみ追加する。
  */
 
-const MF_MONTHS_TO_FETCH = 2; // 当月 + 前月の2ヶ月分
+const LOG_PREFIX = '[サイト巡回]';
+const SITE_ID = 'moneyforward';
+
+/**
+ * オプションから取得月数と最小対象年月を取得する
+ * @param {Object} [site] - サイト設定（オプション画面の値）
+ * @returns {{ monthsToFetch: number, minYearMonth: string }}
+ */
+function getMfOptions(site = {}) {
+  const monthsRaw = site?.mfMonthsToFetch;
+  const monthsToFetch = (monthsRaw !== '' && monthsRaw != null)
+    ? Math.max(1, Math.min(24, parseInt(String(monthsRaw), 10) || 2))
+    : 2;
+  const minRaw = (site?.mfMinYearMonth || '').trim();
+  const minYearMonth = /^\d{4}-\d{2}$/.test(minRaw) ? minRaw : '2025-03';
+  return { monthsToFetch, minYearMonth };
+}
 
 function normalizeCardType(dataOriginalTitle) {
   if (!dataOriginalTitle || dataOriginalTitle.trim() === '') {
@@ -52,7 +68,7 @@ function extractTableData() {
     const dataOriginalTitle = noteTd?.getAttribute('data-original-title') || '';
     const cardType = normalizeCardType(dataOriginalTitle);
     if (cardType === null && dataOriginalTitle) {
-      console.warn('Unknown card type, skipping:', dataOriginalTitle);
+      console.warn(`${LOG_PREFIX} ${SITE_ID} 不明なカード種別をスキップ:`, dataOriginalTitle);
       continue;
     }
     if (cardType === null) continue;
@@ -62,90 +78,38 @@ function extractTableData() {
 }
 
 /**
- * MoneyForward明細をAPIに送信する
+ * batches を構築するヘルパー（API送信はService Workerで実行する）
+ * Content Scriptはページコンテキストで動作するため、別オリジンへのfetchがCORSでブロックされる。
+ * そのためデータ抽出のみ行い、実際のAPI送信はService Workerに委譲する。
  *
  * @param {Object} instrument - 支払い手段情報
- * @param {string} instrument.instrumentName - 支払い手段名
- * @param {string} instrument.instrumentType - 'CREDIT_CARD' | 'BANK_ACCOUNT' | 'CASH'
  * @param {Array} items - 明細データ配列
- * @returns {Promise<Object>} APIレスポンス
- * @throws {Error} 設定がない場合、またはAPIエラー時
+ * @returns {{instrument: Object, items: Array}} リクエストボディ
  */
-async function sendMfExpenseLogs(instrument, items) {
-  const { settings } = await chrome.storage.local.get('settings');
-  const siteConfig = settings?.sites?.['moneyforward'];
-
-  const requestBody = {
-    instrument,
-    items,
-  };
-
-  // モックモードの場合は fetch せず console.log で出力
-  const mockMode = window.__COLLECT_MOCK_MODE__ === true;
-  if (mockMode) {
-    const mockLog = {
-      url: siteConfig?.ifaApiUrl || '(URL未設定)',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer [REDACTED]',
-      },
-      body: requestBody
-    };
-    // Content Script のコンソールにも出力
-    console.log('[Mock] Would POST to', mockLog.url, mockLog);
-    // Service Worker のコンソールにも出力されるようにメッセージを送信
-    try {
-      chrome.runtime.sendMessage({
-        type: 'MOCK_LOG',
-        message: `[Mock] Would POST to ${mockLog.url}`,
-        data: mockLog
-      }).catch(() => {
-        // Service Worker が応答しない場合（通常の実行時など）は無視
-      });
-    } catch (e) {
-      // メッセージ送信に失敗した場合は無視
-    }
-    return { result: 'ok', mock: true };
-  }
-
-  // モックモードでない場合のみ環境変数をチェック
-  if (!siteConfig?.ifaApiUrl) {
-    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
-  }
-  if (!siteConfig?.ifaApiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
-  }
-
-  const response = await fetch(siteConfig.ifaApiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${siteConfig.ifaApiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => 'レスポンス取得失敗');
-    if (response.status === 401) {
-      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
-    }
-    if (response.status === 400) {
-      throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
-    }
-    throw new Error(`IFA APIエラー: ${errorText} (${response.status})`);
-  }
-
-  const result = await response.json();
-
-  if (result.result === 'partial') {
-    console.warn('IFA API: 部分的に処理されました', result);
-  }
-
-  return result;
+function buildMfExpenseBatch(instrument, items) {
+  return { instrument, items };
 }
 
-async function collect_moneyforward() {
+/**
+ * .fc-header-title h2 の表示（例: "2026/01/01 - 2026/01/31"）から表示中の年月を取得する
+ * @returns {string|null} "YYYY-MM" または取得できない場合は null
+ */
+function getDisplayedYearMonth() {
+  const headerTitle = document.querySelector('.fc-header-title h2');
+  if (!headerTitle) return null;
+  const text = (headerTitle.textContent || '').trim();
+  const startPart = text.split(/\s+-\s+/)[0];
+  if (!startPart) return null;
+  const ymd = startPart.replace(/\//g, '-');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  return ymd.slice(0, 7);
+}
+
+async function collect_moneyforward(site = {}) {
+  console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
+
+  const { monthsToFetch: MF_MONTHS_TO_FETCH, minYearMonth: MF_MIN_YEARMONTH } = getMfOptions(site);
+
   const TABLE_UPDATE_TIMEOUT_MS = 10000;
 
   function waitForTableUpdate() {
@@ -183,23 +147,34 @@ async function collect_moneyforward() {
 
   btnToday.click();
   await waitForTableUpdate();
-  const currentData = extractTableData();
-  for (const row of currentData) {
-    if (!seenIds.has(row.id)) {
-      seenIds.add(row.id);
-      allRows.push(row);
+  const currentYearMonth = getDisplayedYearMonth();
+  // 表示月が `MF_MIN_YEARMONTH` 以上（含む）のときだけその月を取得する
+  if (currentYearMonth != null && currentYearMonth >= MF_MIN_YEARMONTH) {
+    const currentData = extractTableData();
+    for (const row of currentData) {
+      if (!seenIds.has(row.id)) {
+        seenIds.add(row.id);
+        allRows.push(row);
+      }
     }
+  } else if (currentYearMonth != null) {
+    console.log(`${LOG_PREFIX} ${SITE_ID} 表示月が対象外のためスキップ`, { 表示月: currentYearMonth, 最小対象: MF_MIN_YEARMONTH });
   }
 
   for (let i = 0; i < MF_MONTHS_TO_FETCH - 1; i++) {
     btnPrev.click();
     await waitForTableUpdate();
-    const monthData = extractTableData();
-    for (const row of monthData) {
-      if (!seenIds.has(row.id)) {
-        seenIds.add(row.id);
-        allRows.push(row);
+    const displayedYearMonth = getDisplayedYearMonth();
+    if (displayedYearMonth != null && displayedYearMonth >= MF_MIN_YEARMONTH) {
+      const monthData = extractTableData();
+      for (const row of monthData) {
+        if (!seenIds.has(row.id)) {
+          seenIds.add(row.id);
+          allRows.push(row);
+        }
       }
+    } else if (displayedYearMonth != null) {
+      console.log(`${LOG_PREFIX} ${SITE_ID} 表示月が対象外のためスキップ`, { 表示月: displayedYearMonth, 最小対象: MF_MIN_YEARMONTH });
     }
   }
 
@@ -211,6 +186,7 @@ async function collect_moneyforward() {
     byCardType[ct].push(row);
   }
 
+  const batches = [];
   for (const [cardType, items] of Object.entries(byCardType)) {
     const instrument = {
       instrumentName: 'MF:' + cardType,
@@ -221,7 +197,12 @@ async function collect_moneyforward() {
       usedOn: r.usedOn,
       amount: r.amount
     }));
-    // 失敗時は throw して全体を失敗とする（共通 Slack 通知に載せるため）
-    await sendMfExpenseLogs(instrument, apiItems);
+    batches.push(buildMfExpenseBatch(instrument, apiItems));
   }
+
+  const mockLabel = (typeof window !== 'undefined' && window.__COLLECT_MOCK_MODE__) ? ' モック' : ((typeof window !== 'undefined' && window.__COLLECT_LOCAL_MODE__) ? ' ローカル' : '');
+  const totalItems = batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+  console.log(`${LOG_PREFIX} ${SITE_ID} 完了 バッチ=${batches.length} 件数=${totalItems}${mockLabel}`);
+
+  return { batches };
 }

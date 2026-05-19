@@ -3,6 +3,49 @@
 // 共通ユーティリティを読み込む（HTMLからscriptタグで読み込まれる）
 // utils/validation.js と utils/schedule.js が先に読み込まれている必要がある
 
+/** Service Worker 側 utils/options-api-log.js と同じキー */
+const OPTIONS_API_LOG_STORAGE_KEY = 'optionsApiRequestLog';
+
+/**
+ * オプション上部の API 送信ログ欄を更新する
+ * @param {Array<unknown>|undefined} entries
+ */
+function renderOptionsApiLog(entries) {
+  const el = document.getElementById('options-api-log');
+  if (!el) {
+    return;
+  }
+  if (!entries || entries.length === 0) {
+    el.textContent =
+      '（送信ログはまだありません。楽天カード／マネーフォワードの巡回で API 送信時にここへ追記されます。オプションを開いたままにすると自動更新されます。）';
+    return;
+  }
+  const blocks = entries.slice().reverse().map((e) => {
+    const row = typeof e === 'object' && e !== null ? { ...e } : { value: e };
+    if (typeof row.at === 'number') {
+      row.atLocal = new Date(row.at).toLocaleString('ja-JP', {
+        dateStyle: 'medium',
+        timeStyle: 'medium'
+      });
+    }
+    return JSON.stringify(row, null, 2);
+  });
+  el.textContent = blocks.join('\n\n————————————————\n\n');
+}
+
+async function refreshOptionsApiLog() {
+  const got = await chrome.storage.local.get(OPTIONS_API_LOG_STORAGE_KEY);
+  renderOptionsApiLog(got[OPTIONS_API_LOG_STORAGE_KEY]);
+}
+
+async function clearOptionsApiLog() {
+  if (!confirm('API 送信ログをすべて消去しますか？')) {
+    return;
+  }
+  await chrome.storage.local.set({ [OPTIONS_API_LOG_STORAGE_KEY]: [] });
+  await refreshOptionsApiLog();
+}
+
 /**
  * 指定 siteId の sites/${siteId}.options.js を動的ロードする
  *
@@ -37,6 +80,10 @@ async function loadSites() {
   if (slackWebhookUrlInput) {
     slackWebhookUrlInput.value = settings.slackWebhookUrl || '';
   }
+  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
+  if (slackSuccessWebhookUrlInput) {
+    slackSuccessWebhookUrlInput.value = settings.slackSuccessWebhookUrl || '';
+  }
   
   const container = document.getElementById('sites-container');
   container.innerHTML = '';
@@ -52,16 +99,18 @@ async function loadSites() {
     const site = settings.sites[siteId];
     const siteState = state.bySite[siteId] || {};
     
-    const siteDiv = document.createElement('div');
+    const siteDiv = document.createElement('details');
     siteDiv.className = 'site-section';
     siteDiv.id = `site-${siteId}`;
+    // デフォルトは閉じた状態（open属性なし）
     
     siteDiv.innerHTML = `
-      <div class="site-header">
+      <summary class="site-header">
         <h2>${escapeHtml(siteId)}</h2>
         <button class="delete" data-site-id="${escapeHtml(siteId)}">削除</button>
-      </div>
+      </summary>
       
+      <div class="site-accordion-body">
       <div class="form-group">
         <label>
           <input type="checkbox" id="${siteId}-enabled" ${site.enabled ? 'checked' : ''}>
@@ -71,7 +120,10 @@ async function loadSites() {
       
       <div class="form-group">
         <label>URL:</label>
-        <input type="text" id="${siteId}-url" value="${escapeHtml(site.url)}" placeholder="https://example.com">
+        <div class="url-input-row">
+          <input type="text" id="${siteId}-url" value="${escapeHtml(site.url)}" placeholder="https://example.com">
+          <button type="button" class="open-site-url" data-site-id="${escapeHtml(siteId)}" title="このURLを新しいタブで開く">開く</button>
+        </div>
       </div>
       
       <div class="form-group">
@@ -125,6 +177,8 @@ async function loadSites() {
         <button class="save-site" data-site-id="${escapeHtml(siteId)}" style="background: #34a853;">保存</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="false">今すぐ実行</button>
         <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-mock-mode="true" style="background: #ff9800;">今すぐ実行（モック）</button>
+        <button class="run-now" data-site-id="${escapeHtml(siteId)}" data-local-mode="true" style="background: #7b1fa2;">今すぐ実行（ローカル）</button>
+      </div>
       </div>
     `;
     
@@ -138,23 +192,28 @@ async function loadSites() {
       if (optionsContainer) {
         for (const opt of schema) {
           const inputId = `${siteId}-${opt.key}`;
-          const value = site[opt.key] || '';
-          const inputType = opt.type === 'password' ? 'password' : 'text';
+          const value = site[opt.key] ?? '';
+          const inputType = opt.type === 'password' ? 'password' : (opt.type === 'number' ? 'number' : 'text');
+          const extraAttrs = [];
+          if (opt.type === 'url') extraAttrs.push('placeholder="https://..."');
+          if (opt.type === 'number' && opt.min != null) extraAttrs.push(`min="${opt.min}"`);
+          if (opt.type === 'number' && opt.max != null) extraAttrs.push(`max="${opt.max}"`);
           const group = document.createElement('div');
           group.className = 'form-group';
           group.innerHTML = `
             <label for="${escapeHtml(inputId)}">${escapeHtml(opt.label)}:</label>
-            <input type="${inputType}" id="${inputId}" value="${escapeHtml(value)}" ${opt.type === 'url' ? 'placeholder="https://..."' : ''}>
+            <input type="${inputType}" id="${inputId}" value="${escapeHtml(String(value))}" ${extraAttrs.join(' ')}>
           `;
           optionsContainer.appendChild(group);
         }
       }
     }
     
-    // 削除ボタンのイベントリスナーを設定
+    // 削除ボタンのイベントリスナーを設定（summary内のためstopPropagationでパネル開閉を防止）
     const deleteButton = siteDiv.querySelector('.delete');
     if (deleteButton) {
-      deleteButton.addEventListener('click', () => {
+      deleteButton.addEventListener('click', (e) => {
+        e.stopPropagation();
         deleteSite(siteId);
       });
     }
@@ -167,6 +226,28 @@ async function loadSites() {
       });
     }
     
+    // URL「開く」ボタン
+    const openUrlButton = siteDiv.querySelector('.open-site-url');
+    if (openUrlButton) {
+      openUrlButton.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = openUrlButton.getAttribute('data-site-id');
+        const urlInput = document.getElementById(`${id}-url`);
+        const raw = urlInput ? urlInput.value.trim() : '';
+        if (!raw) {
+          alert(`サイト "${id}" のURLが入力されていません。`);
+          return;
+        }
+        try {
+          new URL(raw);
+        } catch {
+          alert(`サイト "${id}" のURL形式が正しくありません。`);
+          return;
+        }
+        chrome.tabs.create({ url: raw });
+      });
+    }
+
     // 「保存」ボタンのイベントリスナーを設定
     const saveButton = siteDiv.querySelector('.save-site');
     if (saveButton) {
@@ -181,7 +262,8 @@ async function loadSites() {
     runButtons.forEach(button => {
       button.addEventListener('click', async () => {
         const siteId = button.getAttribute('data-site-id');
-        const mockMode = button.getAttribute('data-mock-mode') === 'true';
+        const localMode = button.getAttribute('data-local-mode') === 'true';
+        const mockMode = !localMode && button.getAttribute('data-mock-mode') === 'true';
         
         // フォームから現在の値を読み取り、一時的に設定を更新
         const urlInput = document.getElementById(`${siteId}-url`);
@@ -209,20 +291,30 @@ async function loadSites() {
         settings.sites[siteId].url = url;
         await chrome.storage.local.set({ settings });
         
+        const defaultLabel = button.getAttribute('data-mock-mode') === 'true'
+          ? '今すぐ実行（モック）'
+          : (button.getAttribute('data-local-mode') === 'true' ? '今すぐ実行（ローカル）' : '今すぐ実行');
         button.disabled = true;
-        button.textContent = mockMode ? '実行中（モック）...' : '実行中...';
+        button.textContent = localMode ? '実行中（ローカル）...' : (mockMode ? '実行中（モック）...' : '実行中...');
         
         try {
           const response = await chrome.runtime.sendMessage({
             type: 'RUN_SITE',
             siteId,
-            mockMode
+            mockMode: localMode ? false : mockMode,
+            localMode: localMode ? true : false
           });
           
           if (!response) {
             alert('実行中にエラーが発生しました: Service Worker が応答しませんでした。');
           } else if (response.success) {
-            alert(mockMode ? 'モック実行が完了しました。コンソールを確認してください。' : '実行が完了しました。');
+            if (localMode) {
+              alert('ローカル実行が完了しました。');
+            } else if (mockMode) {
+              alert('モック実行が完了しました。コンソールを確認してください。');
+            } else {
+              alert('実行が完了しました。');
+            }
             await loadSites(); // 状態を更新
           } else {
             alert('実行中にエラーが発生しました: ' + (response.error || '不明なエラー'));
@@ -231,7 +323,7 @@ async function loadSites() {
           alert('実行中にエラーが発生しました: ' + err.message);
         } finally {
           button.disabled = false;
-          button.textContent = mockMode ? '今すぐ実行（モック）' : '今すぐ実行';
+          button.textContent = defaultLabel;
         }
       });
     });
@@ -325,6 +417,60 @@ const DEFAULT_SITE = {
     minute: 0
   }
 };
+
+/**
+ * フォームの Slack Webhook URL を settings オブジェクトに反映する（storage 保存はしない）
+ *
+ * @param {Object} settings - 更新対象の settings
+ * @returns {boolean} 検証に成功したら true、失敗時は alert 済みで false
+ */
+function applySlackWebhookFromForm(settings) {
+  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
+  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
+  if (!slackWebhookUrlInput) {
+    return true;
+  }
+  const slackWebhookUrl = slackWebhookUrlInput.value.trim();
+  if (slackWebhookUrl) {
+    try {
+      new URL(slackWebhookUrl);
+      settings.slackWebhookUrl = slackWebhookUrl;
+    } catch {
+      alert('Slack Webhook URL（失敗・0件時）の形式が正しくありません。');
+      return false;
+    }
+  } else {
+    delete settings.slackWebhookUrl;
+  }
+  if (slackSuccessWebhookUrlInput) {
+    const successUrl = slackSuccessWebhookUrlInput.value.trim();
+    if (successUrl) {
+      try {
+        new URL(successUrl);
+        settings.slackSuccessWebhookUrl = successUrl;
+      } catch {
+        alert('Slack Webhook URL（成功・稼働確認）の形式が正しくありません。');
+        return false;
+      }
+    } else {
+      delete settings.slackSuccessWebhookUrl;
+    }
+  }
+  return true;
+}
+
+/**
+ * 通知設定（Slack Webhook のみ）を storage に保存する
+ */
+async function saveNotificationSettings() {
+  const result = await chrome.storage.local.get('settings');
+  const settings = result.settings || { sites: {} };
+  if (!applySlackWebhookFromForm(settings)) {
+    return;
+  }
+  await chrome.storage.local.set({ settings });
+  alert('通知設定を保存しました');
+}
 
 /**
  * 指定されたサイトの設定を保存する
@@ -462,26 +608,11 @@ async function saveSite(siteId) {
 async function saveAllSites() {
   const result = await chrome.storage.local.get('settings');
   const settings = result.settings || { sites: {} };
-  
-  // Slack Webhook URLを保存
-  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
-  if (slackWebhookUrlInput) {
-    const slackWebhookUrl = slackWebhookUrlInput.value.trim();
-    if (slackWebhookUrl) {
-      // URL形式の検証（空の場合は保存しない）
-      try {
-        new URL(slackWebhookUrl);
-        settings.slackWebhookUrl = slackWebhookUrl;
-      } catch {
-        alert('Slack Webhook URLの形式が正しくありません。');
-        return;
-      }
-    } else {
-      // 空の場合は削除
-      delete settings.slackWebhookUrl;
-    }
+
+  if (!applySlackWebhookFromForm(settings)) {
+    return;
   }
-  
+
   for (const siteId of Object.keys(settings.sites)) {
     const enabled = document.getElementById(`${siteId}-enabled`).checked;
     const url = document.getElementById(`${siteId}-url`).value.trim();
@@ -664,6 +795,23 @@ function escapeHtml(text) {
 // ページ読み込み時にサイト一覧を表示し、イベントリスナーを設定
 document.addEventListener('DOMContentLoaded', () => {
   loadSites();
+  refreshOptionsApiLog();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[OPTIONS_API_LOG_STORAGE_KEY]) {
+      return;
+    }
+    renderOptionsApiLog(changes[OPTIONS_API_LOG_STORAGE_KEY].newValue);
+  });
+
+  const logRefresh = document.getElementById('options-api-log-refresh');
+  if (logRefresh) {
+    logRefresh.addEventListener('click', () => refreshOptionsApiLog());
+  }
+  const logClear = document.getElementById('options-api-log-clear');
+  if (logClear) {
+    logClear.addEventListener('click', () => clearOptionsApiLog());
+  }
   
   // サイト追加ボタンのイベントリスナー
   const addSiteButton = document.getElementById('add-site-button');
@@ -675,6 +823,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveAllButton = document.getElementById('save-all-button');
   if (saveAllButton) {
     saveAllButton.addEventListener('click', saveAllSites);
+  }
+
+  const saveNotificationButton = document.getElementById('save-notification-button');
+  if (saveNotificationButton) {
+    saveNotificationButton.addEventListener('click', saveNotificationSettings);
   }
 });
 
