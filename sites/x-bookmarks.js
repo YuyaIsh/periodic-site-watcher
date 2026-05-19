@@ -212,16 +212,6 @@ function extractXArticleUrls(tweetElement) {
   const urls = [];
   const seen = new Set();
 
-  // TODO: X内記事カードのDOMを実ページで確認して精度を上げる。
-  // 要件:
-  // - X内記事が貼られている場合、その記事ページに遷移できるURLを取得する。
-  // - 取得したURLはService Workerで別タブを開き、sites/x-article.jsで本文取得を試みる。
-  // - 記事本文取得に失敗しても、ポスト本文・ポストURL・記事URLだけでChatGPT送信を続行する。
-  // 実ページで確認する操作:
-  // 1. XブックマークでX内記事カード付きポストを開く。
-  // 2. 記事カードのa[href]、role、data-testid、aria-labelをDevToolsで確認する。
-  // 3. /i/article/、/articles/、/compose/articles/ など実際のURL形式を確認する。
-  // 4. 記事カードと通常の外部リンクカードを区別できる属性を確認する。
   for (const link of tweetElement.querySelectorAll('a[href]')) {
     const href = link.href || link.getAttribute('href') || '';
     if (!href) continue;
@@ -230,45 +220,149 @@ function extractXArticleUrls(tweetElement) {
     seen.add(href);
     urls.push(href);
   }
+
+  if (urls.length === 0 && tweetElement.querySelector('[data-testid="article-cover-image"]')) {
+    const screenName = extractScreenName(tweetElement);
+    const tweetId = extractTweetId(tweetElement);
+    if (screenName && tweetId) {
+      const built = `https://x.com/${screenName}/article/${tweetId}`;
+      if (!seen.has(built)) urls.push(built);
+    }
+  }
+
   return urls;
 }
 
 function extractQuotedPost(tweetElement, tweetIdMap) {
-  // TODO: 引用ポストのDOMを実ページで確認して完全反映する（card.wrapper 前提の限界あり）。
-  // 要件:
-  // - 引用リツイートだった場合は引用元も取得する（引用の引用は持たない）。
-  // - ブックマーク対象ポストと同様に externalLinks / xArticleUrls も引用要素から取る。
-  const card = tweetElement.querySelector('[data-testid="card.wrapper"]');
-  if (!card) return null;
-  const link = card.querySelector('a[href*="/status/"]');
-  const href = link?.getAttribute('href') || '';
-  const match = href.match(/\/status\/(\d+)/);
-  const tweetId = match?.[1] || null;
-  if (!tweetId) return null;
-  const fallbackUrl = href.startsWith('http') ? href : `https://x.com${href}`;
-  const quotedElement = tweetIdMap.get(tweetId);
-  if (!quotedElement || quotedElement === tweetElement) {
+  const quoteLabelContainer = findQuoteLabelContainer(tweetElement);
+  const fromQuoteUi = extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer);
+  if (fromQuoteUi) return fromQuoteUi;
+
+  const fromCard = extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer);
+  if (fromCard) return fromCard;
+
+  return null;
+}
+
+function isQuoteLabelText(text) {
+  const t = (text || '').trim();
+  if (t === '引用') return true;
+  return /^quote$/i.test(t);
+}
+
+function findQuoteLabelContainer(tweetElement) {
+  return findQuoteRootFromLabel(tweetElement);
+}
+
+function findQuoteRootFromLabel(tweetElement) {
+  const mainTweetText = tweetElement.querySelector('[data-testid="tweetText"]');
+  for (const span of tweetElement.querySelectorAll('span')) {
+    if (!isQuoteLabelText(span.textContent)) continue;
+    let el = span.parentElement;
+    while (el && el !== tweetElement) {
+      const hasLink = el.querySelector('[role="link"]');
+      const hasTweetText = el.querySelector('[data-testid="tweetText"]');
+      if (hasLink && hasTweetText && !(mainTweetText && el.contains(mainTweetText))) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+  }
+  return null;
+}
+
+function extractTweetIdFromQuoteRoot(quoteRoot, tweetIdMap) {
+  for (const link of quoteRoot.querySelectorAll('a[href*="/status/"]')) {
+    const href = link.getAttribute('href') || '';
+    const match = href.match(/\/status\/(\d+)/);
+    if (match?.[1]) return match[1];
+  }
+
+  const textEl = quoteRoot.querySelector('[data-testid="tweetText"]');
+  const text = textEl?.innerText || textEl?.textContent || '';
+  const urlMatch = text.match(/(?:x\.com|twitter\.com)\/([^/?#\s]+)\/status\/(\d+)/i);
+  if (urlMatch?.[2]) {
+    const fromMap = tweetIdMap.get(urlMatch[2]);
+    if (fromMap && fromMap !== quoteRoot) return urlMatch[2];
+    return urlMatch[2];
+  }
+
+  return null;
+}
+
+function buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement) {
+  const quotedElement = tweetId ? tweetIdMap.get(tweetId) : null;
+  const source =
+    quotedElement && quotedElement !== tweetElement ? quotedElement : quoteRoot;
+
+  const text = extractTweetText(source);
+  const author = extractAuthorInfo(source);
+  if (!tweetId && !text && !author?.displayName && !author?.screenName) return null;
+
+  const screenName = extractScreenName(source) || author?.screenName || null;
+  const url = tweetId
+    ? screenName
+      ? `https://x.com/${screenName}/status/${tweetId}`
+      : `https://x.com/i/web/status/${tweetId}`
+    : null;
+
+  return {
+    tweetId: tweetId || null,
+    url,
+    text,
+    author: author?.displayName || author?.screenName ? author : null,
+    postedAt: extractPostedAt(source),
+    imageUrls: extractTweetImageUrls(source),
+    externalLinks: extractExternalLinks(source),
+    xArticleUrls: extractXArticleUrls(source)
+  };
+}
+
+function extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer) {
+  const quoteRoot = findQuoteRootFromLabel(tweetElement);
+  if (!quoteRoot) return null;
+  const tweetId = extractTweetIdFromQuoteRoot(quoteRoot, tweetIdMap);
+  return buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement);
+}
+
+function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer) {
+  const cards = tweetElement.querySelectorAll('[data-testid="card.wrapper"]');
+  for (const card of cards) {
+    if (quoteLabelContainer && quoteLabelContainer.contains(card)) continue;
+    const statusLink = card.querySelector('a[href*="/status/"]');
+    if (!statusLink) continue;
+
+    const href = statusLink.getAttribute('href') || '';
+    const match = href.match(/\/status\/(\d+)/);
+    const tweetId = match?.[1] || null;
+    if (!tweetId) continue;
+
+    const fallbackUrl = href.startsWith('http') ? href : `https://x.com${href}`;
+    const quotedElement = tweetIdMap.get(tweetId);
+    if (!quotedElement || quotedElement === tweetElement) {
+      return {
+        tweetId,
+        url: fallbackUrl,
+        text: '',
+        author: null,
+        postedAt: null,
+        imageUrls: [],
+        externalLinks: [],
+        xArticleUrls: []
+      };
+    }
     return {
       tweetId,
-      url: fallbackUrl,
-      text: '',
-      author: null,
-      postedAt: null,
-      imageUrls: [],
-      externalLinks: [],
-      xArticleUrls: []
+      url: extractTweetUrl(quotedElement, tweetId),
+      text: extractTweetText(quotedElement),
+      author: extractAuthorInfo(quotedElement),
+      postedAt: extractPostedAt(quotedElement),
+      imageUrls: extractTweetImageUrls(quotedElement),
+      externalLinks: extractExternalLinks(quotedElement),
+      xArticleUrls: extractXArticleUrls(quotedElement)
     };
   }
-  return {
-    tweetId,
-    url: extractTweetUrl(quotedElement, tweetId),
-    text: extractTweetText(quotedElement),
-    author: extractAuthorInfo(quotedElement),
-    postedAt: extractPostedAt(quotedElement),
-    imageUrls: extractTweetImageUrls(quotedElement),
-    externalLinks: extractExternalLinks(quotedElement),
-    xArticleUrls: extractXArticleUrls(quotedElement)
-  };
+  return null;
 }
 
 function isXInternalUrl(url) {
@@ -284,7 +378,11 @@ function isXArticleUrl(url) {
   try {
     const u = new URL(url, location.href);
     const isXHost = ['x.com', 'twitter.com', 'www.x.com', 'www.twitter.com'].includes(u.hostname);
-    return isXHost && (/\/i\/article\//.test(u.pathname) || /\/articles\//.test(u.pathname) || /\/compose\/articles\//.test(u.pathname));
+    if (!isXHost) return false;
+    if (/\/i\/article\//.test(u.pathname)) return true;
+    if (/\/articles\//.test(u.pathname)) return true;
+    if (/\/compose\/articles\//.test(u.pathname)) return true;
+    return /^\/[^/]+\/article\/\d+/.test(u.pathname);
   } catch (_) {
     return false;
   }

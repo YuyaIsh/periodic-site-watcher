@@ -398,7 +398,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
             assertInjectablePageUrl(artTab.url || '');
             const envelope = await injectAndCollect(tabIdArticle, 'x_article', {
               mockMode,
-              timeoutSec: pipelineTimeoutSec,
+              timeoutSec: Math.max(pipelineTimeoutSec, 45),
               collectContext: {}
             });
             xArticleResults.push(envelope.payload || {});
@@ -427,7 +427,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
           assertInjectablePageUrl(gpTabMeta.url || '');
           const gptEnvelope = await injectAndCollect(gptTabId, 'chatgpt_project', {
             mockMode,
-            timeoutSec: pipelineTimeoutSec,
+            timeoutSec: Math.max(pipelineTimeoutSec, 90),
             collectContext: { __chatgptPostPayload: payloadForChatgpt }
           });
           const gptInner = gptEnvelope.payload || {};
@@ -474,7 +474,29 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
 
+    const hook = slackWebhookFromSiteOrGlobal(site, settings);
     const apiUrlTrim = site.apiUrl && site.apiUrl.trim();
+    const conversations = posts
+      .map((p) => {
+        const meta = processedTweetIds[p.tweetId];
+        return meta
+          ? {
+              tweetId: p.tweetId,
+              title: meta.title || null,
+              conversationUrl: meta.conversationUrl || null
+            }
+          : null;
+      })
+      .filter(Boolean);
+    if (hook && !mockMode) {
+      await notifySlackOnSuccess(hook, {
+        siteId,
+        okCount,
+        totalCount: posts.length,
+        conversations,
+        partialErrors: errors.length ? errors.join('; ').substring(0, 300) : ''
+      });
+    }
     if (apiUrlTrim) {
       // TODO: ChatGPT と併せて外向き API にも載せたい場合は送信ペイロード形式を決めて実装する（現状はスキップ）。
       console.warn(
