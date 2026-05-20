@@ -531,19 +531,12 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
 
-    const apiUrlTrim = site.apiUrl && site.apiUrl.trim();
     if (!mockMode && settings?.slackSuccessWebhookUrl?.trim()) {
       await notifySlackOnSuccess(settings.slackSuccessWebhookUrl, {
         siteId,
         recordCount: okCount,
         runLabel: 'x-bookmarks パイプライン'
       });
-    }
-    if (apiUrlTrim) {
-      // TODO: ChatGPT と併せて外向き API にも載せたい場合は送信ペイロード形式を決めて実装する（現状はスキップ）。
-      console.warn(
-        `[${siteId}] site.apiUrl is set but x-bookmarks pipeline skips HTTP POST until payload contract is defined.`
-      );
     }
   } catch (error) {
     await persistSiteRunFailure(siteId, settings, site, now, error);
