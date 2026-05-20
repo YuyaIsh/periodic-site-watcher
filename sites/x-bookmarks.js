@@ -7,13 +7,28 @@
 
 const LOG_PREFIX = '[サイト巡回]';
 const SITE_ID = 'x-bookmarks';
-const MAX_POSTS_PER_RUN = 3;
+const DEFAULT_MAX_POSTS_PER_RUN = 3;
 const MAX_SCROLL_STEPS = 120;
 const MAX_STALL_COUNT = 3;
 const SCROLL_WAIT_MS = 1200;
 const TWITTER_MEDIA_URL_PREFIX = 'https://pbs.twimg.com/media/';
 
+/**
+ * オプションから1回の処理件数を取得する
+ * @param {Object} [site] - サイト設定（オプション画面の値）
+ * @returns {{ maxPostsPerRun: number }}
+ */
+function getXBookmarksOptions(site = {}) {
+  const raw = site?.maxPostsPerRun;
+  const maxPostsPerRun =
+    raw !== '' && raw != null
+      ? Math.max(1, Math.min(10, parseInt(String(raw), 10) || DEFAULT_MAX_POSTS_PER_RUN))
+      : DEFAULT_MAX_POSTS_PER_RUN;
+  return { maxPostsPerRun };
+}
+
 async function collect_x_bookmarks(site = {}) {
+  const { maxPostsPerRun } = getXBookmarksOptions(site);
   console.log(`${LOG_PREFIX} ${SITE_ID} 取得開始`);
 
   const processedTweetIds = site.processedTweetIds || {};
@@ -77,7 +92,7 @@ async function collect_x_bookmarks(site = {}) {
 
   const orderedPosts = visibleOrder.map((tweetId) => collected.get(tweetId)).filter(Boolean);
   const unprocessed = orderedPosts.filter((post) => !processedSet.has(post.tweetId));
-  const posts = unprocessed.reverse().slice(0, MAX_POSTS_PER_RUN);
+  const posts = unprocessed.reverse().slice(0, maxPostsPerRun);
 
   const mockLabel = window.__COLLECT_MOCK_MODE__ === true ? ' モック' : '';
   console.log(`${LOG_PREFIX} ${SITE_ID} 完了 収集=${collected.size} 未処理=${unprocessed.length} 処理対象=${posts.length}${mockLabel}`);

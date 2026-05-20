@@ -376,6 +376,10 @@ async function persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetI
   await chrome.storage.local.set({ state });
 }
 
+/** x-bookmarks 用 ChatGPT Project（固定） */
+const X_BOOKMARKS_CHATGPT_PROJECT_URL =
+  'https://chatgpt.com/g/g-p-69fc53cce1788191824c0d414f61105c-x-bookmark/project';
+
 /**
  * Notion 等の旧フローを廃止し、ChatGPT Project へのマルチタブパイプラインで処理する。
  * TODO: DOMまだ確認できていない箇所（x-article / chatgpt の実送信）はサイトスクリプト側のTODOのまま。
@@ -393,12 +397,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
     ) {
       throw new Error(`Invalid URL for bookmarks page: ${bookmarksUrl}`);
     }
-    const chatgptProjectUrl = (site.chatgptProjectUrl || '').trim();
-    if (!chatgptProjectUrl || !isValidApiUrl(chatgptProjectUrl)) {
-      throw new Error(
-        'ChatGPT Project URLが未設定または不正です（サイトオプションの ChatGPT Project URL を設定してください）'
-      );
-    }
+    const chatgptProjectUrl = X_BOOKMARKS_CHATGPT_PROJECT_URL;
 
     const pipelineTimeoutSec =
       typeof site.timeoutSec === 'number' &&
@@ -441,7 +440,8 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     let okCount = 0;
     const errors = [];
-    const slackPostTexts = [];
+    /** @type {Array<{ tweetId?: string, text?: string, url?: string, author?: object, conversationUrl?: string|null, title?: string|null }>} */
+    const slackProcessedPosts = [];
 
     for (const post of posts) {
       if (!post?.tweetId) continue;
@@ -514,7 +514,14 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
             await chrome.storage.local.set({ state });
           }
 
-          slackPostTexts.push(post.text || '');
+          slackProcessedPosts.push({
+            tweetId: post.tweetId,
+            text: post.text || '',
+            url: post.url || '',
+            author: post.author,
+            conversationUrl: gptInner.conversationUrl ?? null,
+            title: gptInner.title ?? null
+          });
           okCount++;
         } finally {
           try {
@@ -544,12 +551,11 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
 
-    if (settings?.slackSuccessWebhookUrl?.trim()) {
-      await notifySlackOnSuccess(settings.slackSuccessWebhookUrl, {
-        siteId,
-        recordCount: okCount,
-        runLabel: mockMode ? 'x-bookmarks パイプライン（モック）' : 'x-bookmarks パイプライン',
-        postTexts: slackPostTexts
+    const xBookmarksSlackHook = (site.slackWebhookUrl || '').trim();
+    if (xBookmarksSlackHook) {
+      await notifySlackOnXBookmarksProcessed(xBookmarksSlackHook, {
+        posts: slackProcessedPosts,
+        mockMode
       });
     }
   } catch (error) {

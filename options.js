@@ -684,6 +684,15 @@ async function saveSite(siteId) {
           alert(`サイト "${siteId}" の${opt.label}の形式が正しくありません。http:// または https:// で始まるURLを入力してください。`);
           return;
         }
+        if (opt.type === 'number' && value) {
+          const n = parseInt(value, 10);
+          const min = opt.min != null ? opt.min : 1;
+          const max = opt.max != null ? opt.max : Number.MAX_SAFE_INTEGER;
+          if (!Number.isFinite(n) || n < min || n > max) {
+            alert(`サイト "${siteId}" の${opt.label}は ${min}〜${max} の整数で入力してください。`);
+            return;
+          }
+        }
         siteData[opt.key] = value;
       }
     }
@@ -805,6 +814,15 @@ async function saveAllSites() {
           if (opt.type === 'url' && value && !isValidApiUrl(value)) {
             alert(`サイト "${siteId}" の${opt.label}の形式が正しくありません。http:// または https:// で始まるURLを入力してください。`);
             return;
+          }
+          if (opt.type === 'number' && value) {
+            const n = parseInt(value, 10);
+            const min = opt.min != null ? opt.min : 1;
+            const max = opt.max != null ? opt.max : Number.MAX_SAFE_INTEGER;
+            if (!Number.isFinite(n) || n < min || n > max) {
+              alert(`サイト "${siteId}" の${opt.label}は ${min}〜${max} の整数で入力してください。`);
+              return;
+            }
           }
           siteData[opt.key] = value;
         }

@@ -96,10 +96,9 @@ function truncateForSlack(text, maxLen = 140) {
  * @param {string} options.siteId - サイトID
  * @param {number|undefined|null} options.recordCount - 補足用の件数（算出できなければ null / undefined）
  * @param {string} options.runLabel - 実行コンテキスト（例: スケジュール/通常）
- * @param {string[]|undefined} options.postTexts - ポスト本文（140字切り、x-bookmarks 等）
  * @returns {Promise<void>}
  */
-async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel, postTexts }) {
+async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel }) {
   if (!webhookUrl || !webhookUrl.trim()) {
     return;
   }
@@ -110,17 +109,61 @@ async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel,
     lines.push(`件数: ${recordCount}`);
   }
   lines.push(`実行: ${runLabel}`, `時刻: ${timestamp}`);
-  if (Array.isArray(postTexts) && postTexts.length > 0) {
-    lines.push('', '--- ポスト本文 ---');
-    postTexts.forEach((body, i) => {
-      lines.push(`[${i + 1}] ${truncateForSlack(body)}`);
-    });
-  }
   const text = lines.join('\n');
 
   try {
     await postSlackWebhook(webhookUrl, text);
   } catch (err) {
     console.error('Slack成功通知の送信でエラーが発生しました:', err);
+  }
+}
+
+/**
+ * x-bookmarks パイプライン完了時に Slack へ処理結果を送る（サイト専用 Webhook）
+ *
+ * @param {string} webhookUrl - サイトオプションの slackWebhookUrl
+ * @param {Object} options
+ * @param {Array<{ tweetId?: string, text?: string, url?: string, author?: { displayName?: string, screenName?: string }, conversationUrl?: string|null, title?: string|null }>} options.posts
+ * @param {boolean} [options.mockMode]
+ * @returns {Promise<void>}
+ */
+async function notifySlackOnXBookmarksProcessed(webhookUrl, { posts, mockMode }) {
+  if (!webhookUrl || !webhookUrl.trim()) {
+    return;
+  }
+  if (!Array.isArray(posts) || posts.length === 0) {
+    return;
+  }
+
+  const timestamp = new Date().toLocaleString('ja-JP');
+  const modeSuffix = mockMode ? '（モック）' : '';
+  const lines = [`📌 Xブックマーク処理完了${modeSuffix}`, `件数: ${posts.length}`, `時刻: ${timestamp}`, ''];
+
+  posts.forEach((item, i) => {
+    const sn = item.author?.screenName ? `@${item.author.screenName}` : '';
+    const headline =
+      (item.title && String(item.title).trim()) ||
+      truncateForSlack(item.text, 72);
+    const header = [sn, headline].filter(Boolean).join(' | ') || `Tweet ${item.tweetId || i + 1}`;
+    lines.push(`[${i + 1}] ${header}`);
+    lines.push(`タイトル: ${(item.title && String(item.title).trim()) || '（未取得）'}`);
+    lines.push(`本文: ${truncateForSlack(item.text)}`);
+    if (item.url) {
+      lines.push(`X: ${item.url}`);
+    }
+    if (item.conversationUrl) {
+      lines.push(`ChatGPT: ${item.conversationUrl}`);
+    } else {
+      lines.push('ChatGPT: （未取得）');
+    }
+    lines.push('');
+  });
+
+  const text = lines.join('\n').replace(/\n+$/, '');
+
+  try {
+    await postSlackWebhook(webhookUrl, text);
+  } catch (err) {
+    console.error('Slack x-bookmarks 通知の送信でエラーが発生しました:', err);
   }
 }
