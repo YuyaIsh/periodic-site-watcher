@@ -338,17 +338,20 @@ function buildXBookmarksChatgptPrompt(post, xArticleResults, promptPrefixFromSet
   if (post.quotedPost) {
     parts.push('', '--- 引用元（引用の引用は収集しない） ---', stringifyQuotedSnippet(post.quotedPost));
   }
-  parts.push('', '--- X記事ページ抽出結果 ---');
-  if (!xArticleResults || xArticleResults.length === 0) {
-    parts.push('（x-article で開くべき対象がありませんでした）');
-  } else {
-    for (let i = 0; i < xArticleResults.length; i++) {
-      const r = xArticleResults[i];
-      parts.push('', `[記事 ${i + 1}]`, `URL: ${r.url || ''}`);
-      if (r.ok && r.bodyText) {
-        parts.push(`タイトル: ${r.title || ''}`, `本文:\n${r.bodyText}`);
-      } else {
-        parts.push(`抽出失敗: ${r.error || '不明'}（sites/x-article.js のTODO/DOM確認待ちでよくある状態）`);
+  const hasXArticleTargets = mergeBookmarkXArticleUrls(post).length > 0;
+  if (hasXArticleTargets) {
+    parts.push('', '--- X記事ページ抽出結果 ---');
+    if (!xArticleResults || xArticleResults.length === 0) {
+      parts.push('（x-article で開くべき対象がありませんでした）');
+    } else {
+      for (let i = 0; i < xArticleResults.length; i++) {
+        const r = xArticleResults[i];
+        parts.push('', `[記事 ${i + 1}]`, `URL: ${r.url || ''}`);
+        if (r.ok && r.bodyText) {
+          parts.push(`タイトル: ${r.title || ''}`, `本文:\n${r.bodyText}`);
+        } else {
+          parts.push(`抽出失敗: ${r.error || '不明'}（sites/x-article.js のTODO/DOM確認待ちでよくある状態）`);
+        }
       }
     }
   }
@@ -408,7 +411,8 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     let { state } = await chrome.storage.local.get('state');
     const prevBucket = { ...(state.bySite[siteId] || {}) };
-    let processedTweetIds = { ...(prevBucket.processedTweetIds || {}) };
+    const processedTweetIdsAtStart = { ...(prevBucket.processedTweetIds || {}) };
+    let processedTweetIds = { ...processedTweetIdsAtStart };
 
     const bookmarksTabId = (await chrome.tabs.create({ url: bookmarksUrl, active: false })).id;
     let posts = [];
@@ -416,6 +420,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
       await waitUntilTabComplete(bookmarksTabId, pipelineTimeoutSec);
       const bmTabMeta = await chrome.tabs.get(bookmarksTabId);
       assertInjectablePageUrl(bmTabMeta.url || '');
+      await activateCollectTab(bookmarksTabId);
       const bmEnvelope = await injectAndCollect(bookmarksTabId, 'x-bookmarks', {
         mockMode,
         timeoutSec: bookmarkCollectTimeoutSec,
@@ -436,6 +441,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
 
     let okCount = 0;
     const errors = [];
+    const slackPostTexts = [];
 
     for (const post of posts) {
       if (!post?.tweetId) continue;
@@ -488,24 +494,27 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
             collectContext: { __chatgptPostPayload: payloadForChatgpt }
           });
           const gptInner = gptEnvelope.payload || {};
-          if (!gptInner.ok && !gptInner.mock) {
+          if (!gptInner.ok) {
             throw new Error(gptInner.error || 'ChatGPT 側の処理が成功しませんでした');
           }
 
-          processedTweetIds = {
-            ...processedTweetIds,
-            [post.tweetId]: {
-              processedAt: Date.now(),
-              conversationUrl: gptInner.conversationUrl ?? null,
-              title: gptInner.title ?? null
-            }
-          };
+          if (!mockMode) {
+            processedTweetIds = {
+              ...processedTweetIds,
+              [post.tweetId]: {
+                processedAt: Date.now(),
+                conversationUrl: gptInner.conversationUrl ?? null,
+                title: gptInner.title ?? null
+              }
+            };
 
-          ({ state } = await chrome.storage.local.get('state'));
-          const pb = state.bySite[siteId] || {};
-          state.bySite[siteId] = { ...pb, processedTweetIds };
-          await chrome.storage.local.set({ state });
+            ({ state } = await chrome.storage.local.get('state'));
+            const pb = state.bySite[siteId] || {};
+            state.bySite[siteId] = { ...pb, processedTweetIds };
+            await chrome.storage.local.set({ state });
+          }
 
+          slackPostTexts.push(post.text || '');
           okCount++;
         } finally {
           try {
@@ -525,17 +534,22 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
       throw new Error(msg);
     }
 
-    await persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, {
-      partialErrors: errors.length ? errors.join('; ').substring(0, 200) : ''
-    });
+    await persistSiteRunOkMergeProcessed(
+      siteId,
+      site,
+      now,
+      mockMode ? processedTweetIdsAtStart : processedTweetIds,
+      { partialErrors: errors.length ? errors.join('; ').substring(0, 200) : '' }
+    );
 
     console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
 
-    if (!mockMode && settings?.slackSuccessWebhookUrl?.trim()) {
+    if (settings?.slackSuccessWebhookUrl?.trim()) {
       await notifySlackOnSuccess(settings.slackSuccessWebhookUrl, {
         siteId,
         recordCount: okCount,
-        runLabel: 'x-bookmarks パイプライン'
+        runLabel: mockMode ? 'x-bookmarks パイプライン（モック）' : 'x-bookmarks パイプライン',
+        postTexts: slackPostTexts
       });
     }
   } catch (error) {
@@ -583,18 +597,23 @@ function waitForTabComplete(tabId, timeoutSec) {
 }
 
 /**
- * 非アクティブタブでは Page Visibility / タイマー抑制で明細のクライアント描画が遅延しやすいため、
- * 楽天カード巡回時は対象タブを選択状態にする。
+ * 非アクティブタブでは Page Visibility / タイマー抑制でクライアント描画・スクロールが遅延しやすいため、
+ * 収集前に対象タブを選択状態にする。
  *
  * @param {number} tabId
  * @returns {Promise<void>}
  */
-async function activateRakutenStatementTab(tabId) {
+async function activateCollectTab(tabId) {
   try {
     await chrome.tabs.update(tabId, { active: true });
   } catch (_) {
     /* タブが既に閉じている等 */
   }
+}
+
+/** @deprecated 互換のため残す。新規は activateCollectTab を使う */
+async function activateRakutenStatementTab(tabId) {
+  return activateCollectTab(tabId);
 }
 
 /**

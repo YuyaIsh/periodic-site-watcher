@@ -38,6 +38,117 @@ async function refreshOptionsApiLog() {
   renderOptionsApiLog(got[OPTIONS_API_LOG_STORAGE_KEY]);
 }
 
+/**
+ * x-bookmarks の処理済みポスト一覧 HTML を生成する
+ *
+ * @param {Record<string, { processedAt?: number, conversationUrl?: string|null, title?: string|null }>} processedTweetIds
+ * @returns {string}
+ */
+function renderProcessedTweetIdsTableHtml(processedTweetIds) {
+  const entries = Object.entries(processedTweetIds || {});
+  if (entries.length === 0) {
+    return '<p class="processed-tweets-empty">処理済みポストはありません。</p>';
+  }
+
+  const rows = entries
+    .sort(([, a], [, b]) => (b.processedAt || 0) - (a.processedAt || 0))
+    .map(([tweetId, meta]) => {
+      const processedAt = meta.processedAt
+        ? new Date(meta.processedAt).toLocaleString('ja-JP')
+        : '-';
+      const title = escapeHtml(meta.title || '-');
+      const conversationUrl = (meta.conversationUrl || '').trim();
+      const chatgptCell = conversationUrl
+        ? `<a href="${escapeHtml(conversationUrl)}" target="_blank" rel="noopener noreferrer">ChatGPT</a>`
+        : '-';
+      return `
+        <tr>
+          <td>${escapeHtml(tweetId)}</td>
+          <td>${escapeHtml(processedAt)}</td>
+          <td>${title}</td>
+          <td>${chatgptCell}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  return `
+    <div class="processed-tweets-list">
+      <table class="processed-tweets-table">
+        <thead>
+          <tr>
+            <th>Tweet ID</th>
+            <th>処理日時</th>
+            <th>タイトル</th>
+            <th>ChatGPT</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+/**
+ * x-bookmarks サイトセクションに処理済みポスト一覧を追加する
+ *
+ * @param {HTMLElement} siteDiv
+ * @param {string} siteId
+ * @param {Record<string, unknown>} processedTweetIds
+ */
+function appendProcessedTweetIdsSection(siteDiv, siteId, processedTweetIds) {
+  const body = siteDiv.querySelector('.site-accordion-body');
+  if (!body) return;
+
+  const section = document.createElement('div');
+  section.className = 'processed-tweets-section';
+  section.innerHTML = `
+    <h3>処理済みポスト</h3>
+    <div class="processed-tweets-toolbar">
+      <span class="processed-tweets-empty">${Object.keys(processedTweetIds || {}).length} 件</span>
+      <button type="button" class="delete reset-processed-tweets" data-site-id="${escapeHtml(siteId)}">All Reset</button>
+    </div>
+    ${renderProcessedTweetIdsTableHtml(processedTweetIds)}
+  `;
+
+  const stateDisplay = body.querySelector('.state-display');
+  if (stateDisplay) {
+    stateDisplay.insertAdjacentElement('afterend', section);
+  } else {
+    body.appendChild(section);
+  }
+
+  const resetButton = section.querySelector('.reset-processed-tweets');
+  if (resetButton) {
+    resetButton.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await resetAllProcessedTweetIds(siteId);
+    });
+  }
+}
+
+/**
+ * 処理済みポストをすべてリセットする
+ *
+ * @param {string} siteId
+ */
+async function resetAllProcessedTweetIds(siteId) {
+  const confirmed = confirm(
+    '処理済みポストをすべてリセットします。次回実行時に再処理されます。よろしいですか？'
+  );
+  if (!confirmed) return;
+
+  const result = await chrome.storage.local.get('state');
+  const state = result.state || { bySite: {} };
+  if (!state.bySite) state.bySite = {};
+  if (!state.bySite[siteId]) {
+    state.bySite[siteId] = {};
+  }
+  state.bySite[siteId].processedTweetIds = {};
+  await chrome.storage.local.set({ state });
+  await loadSites();
+}
+
 async function clearOptionsApiLog() {
   if (!confirm('API 送信ログをすべて消去しますか？')) {
     return;
@@ -208,6 +319,10 @@ async function loadSites() {
         }
       }
     }
+
+    if (siteId === 'x-bookmarks') {
+      appendProcessedTweetIdsSection(siteDiv, siteId, siteState.processedTweetIds || {});
+    }
     
     // 削除ボタンのイベントリスナーを設定（summary内のためstopPropagationでパネル開閉を防止）
     const deleteButton = siteDiv.querySelector('.delete');
@@ -311,7 +426,7 @@ async function loadSites() {
             if (localMode) {
               alert('ローカル実行が完了しました。');
             } else if (mockMode) {
-              alert('モック実行が完了しました。コンソールを確認してください。');
+              alert('モック実行が完了しました。ChatGPT へ送信しました（処理済みマークは付けていません）。');
             } else {
               alert('実行が完了しました。');
             }

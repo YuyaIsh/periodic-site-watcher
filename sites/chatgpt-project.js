@@ -15,17 +15,6 @@ async function collect_chatgpt_project(site = {}) {
     throw new Error('ChatGPT送信用payloadがありません');
   }
 
-  if (payload.mockMode) {
-    return {
-      ok: true,
-      conversationUrl: 'mock://chatgpt/x-bookmark/' + encodeURIComponent(payload.post?.tweetId || 'unknown'),
-      title: payload.fallbackTitle || 'Mock X Bookmark',
-      attachedImageUrls: [],
-      failedImageUrls: payload.post?.imageUrls || [],
-      mock: true
-    };
-  }
-
   try {
     const inputReady = await waitForChatgptInput(INPUT_WAIT_MS, INPUT_POLL_MS);
     if (!inputReady) {

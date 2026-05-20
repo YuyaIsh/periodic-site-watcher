@@ -74,6 +74,20 @@ async function notifySlackOnZeroItems(webhookUrl, { siteId }) {
 }
 
 /**
+ * Slack 通知用にテキストを正規化して切り詰める
+ *
+ * @param {string} text
+ * @param {number} maxLen
+ * @returns {string}
+ */
+function truncateForSlack(text, maxLen = 140) {
+  const normalized = (text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '(本文なし)';
+  if (normalized.length <= maxLen) return normalized;
+  return normalized.slice(0, maxLen - 1) + '…';
+}
+
+/**
  * 成功完了時に Slack へ heartbeat を送る（全サイト共通）
  * 本文は「巡回が問題なく終わったこと」のみ。件数はペイロードから算出できたときだけ補足行として付与する。
  *
@@ -82,9 +96,10 @@ async function notifySlackOnZeroItems(webhookUrl, { siteId }) {
  * @param {string} options.siteId - サイトID
  * @param {number|undefined|null} options.recordCount - 補足用の件数（算出できなければ null / undefined）
  * @param {string} options.runLabel - 実行コンテキスト（例: スケジュール/通常）
+ * @param {string[]|undefined} options.postTexts - ポスト本文（140字切り、x-bookmarks 等）
  * @returns {Promise<void>}
  */
-async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel }) {
+async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel, postTexts }) {
   if (!webhookUrl || !webhookUrl.trim()) {
     return;
   }
@@ -95,6 +110,12 @@ async function notifySlackOnSuccess(webhookUrl, { siteId, recordCount, runLabel 
     lines.push(`件数: ${recordCount}`);
   }
   lines.push(`実行: ${runLabel}`, `時刻: ${timestamp}`);
+  if (Array.isArray(postTexts) && postTexts.length > 0) {
+    lines.push('', '--- ポスト本文 ---');
+    postTexts.forEach((body, i) => {
+      lines.push(`[${i + 1}] ${truncateForSlack(body)}`);
+    });
+  }
   const text = lines.join('\n');
 
   try {
