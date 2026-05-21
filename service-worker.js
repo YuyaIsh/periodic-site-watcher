@@ -2,6 +2,7 @@
 importScripts(
   'utils/schedule.js',
   'utils/validation.js',
+  'utils/builtin-sites.js',
   'utils/slack.js',
   'utils/options-api-log.js'
 );
@@ -74,31 +75,23 @@ function emitCollectLogsAndStrip(siteId, envelope) {
 async function initializeStorage() {
   const result = await chrome.storage.local.get(['settings', 'state']);
   const now = Date.now();
-  
-  if (!result.settings || !result.settings.sites) {
-    const defaultSettings = {
-      sites: {}
-    };
-    await chrome.storage.local.set({ settings: defaultSettings });
-    result.settings = defaultSettings;
+
+  const normalized = normalizeBuiltinSites(result.settings, result.state, now);
+  if (normalized.removedSiteIds.length > 0) {
+    console.log(
+      `${LOG_PREFIX} 未対応 siteId を storage から削除:`,
+      normalized.removedSiteIds.join(', ')
+    );
   }
-  
-  if (!result.state || !result.state.bySite) {
-    result.state = { bySite: {} };
+
+  if (normalized.changed) {
+    await chrome.storage.local.set({
+      settings: normalized.settings,
+      state: normalized.state
+    });
   }
-  
-  // 新規追加されたサイトのnextRunを初期化（既存のnextRunは保持）
-  for (const siteId of Object.keys(result.settings.sites)) {
-    if (!result.state.bySite[siteId]) {
-      const site = result.settings.sites[siteId];
-      result.state.bySite[siteId] = {
-        nextRun: computeNextRunAfterSuccess(now, site.schedule)
-      };
-    }
-  }
-  
-  await chrome.storage.local.set({ state: result.state });
-  return { settings: result.settings, state: result.state };
+
+  return { settings: normalized.settings, state: normalized.state };
 }
 
 function slackWebhookFromSiteOrGlobal(site, settings) {
@@ -358,8 +351,9 @@ function buildXBookmarksChatgptPrompt(post, xArticleResults, promptPrefixFromSet
   return parts.join('\n');
 }
 
-async function persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, opts) {
-  const partialErrors = (opts && opts.partialErrors) || '';
+async function persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, opts = {}) {
+  const partialErrors = opts.partialErrors || '';
+  const { previousNextRun, invokedBy = 'schedule', resyncSlot = false } = opts;
   const gotten = await chrome.storage.local.get('state');
   const state = gotten.state && typeof gotten.state === 'object' ? gotten.state : { bySite: {} };
   if (!state.bySite) state.bySite = {};
@@ -367,7 +361,12 @@ async function persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetI
   state.bySite[siteId] = {
     ...prev,
     processedTweetIds,
-    nextRun: computeNextRunAfterSuccess(now, site.schedule),
+    nextRun: computeNextRunAfterSuccess(now, site.schedule, {
+      mode: 'after-success',
+      previousNextRun,
+      invokedBy,
+      resyncSlot
+    }),
     lastStatus: 'ok',
     failCount: 0,
     lastRun: now,
@@ -384,7 +383,10 @@ const X_BOOKMARKS_CHATGPT_PROJECT_URL =
  * Notion 等の旧フローを廃止し、ChatGPT Project へのマルチタブパイプラインで処理する。
  * TODO: DOMまだ確認できていない箇所（x-article / chatgpt の実送信）はサイトスクリプト側のTODOのまま。
  */
-async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) {
+async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, runContext = {}) {
+  const { invokedBy = 'schedule', previousNextRun, resyncSlot = false } = runContext;
+  const persistOpts = { invokedBy, previousNextRun, resyncSlot };
+
   try {
     const bookmarksUrl = (site.url || '').trim();
     if (
@@ -433,7 +435,10 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
     }
 
     if (posts.length === 0) {
-      await persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, { partialErrors: '' });
+      await persistSiteRunOkMergeProcessed(siteId, site, now, processedTweetIds, {
+        partialErrors: '',
+        ...persistOpts
+      });
       console.log(`Site ${siteId} bookmark pipeline: no new posts`);
       return;
     }
@@ -546,7 +551,10 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now) 
       site,
       now,
       mockMode ? processedTweetIdsAtStart : processedTweetIds,
-      { partialErrors: errors.length ? errors.join('; ').substring(0, 200) : '' }
+      {
+        partialErrors: errors.length ? errors.join('; ').substring(0, 200) : '',
+        ...persistOpts
+      }
     );
 
     console.log(`Site ${siteId} bookmark+chatgpt pipeline ok (${okCount}/${posts.length} posts succeeded)`);
@@ -1220,8 +1228,14 @@ async function runSite(siteId, options = {}) {
   const meta = formatSiteLogMeta(siteId, invokedBy, mockMode, localMode);
   const now = Date.now();
 
+  const stateResult = await chrome.storage.local.get('state');
+  const siteStateBeforeRun = stateResult.state?.bySite?.[siteId] || {};
+  const previousNextRun = siteStateBeforeRun.nextRun;
+  const resyncSlot = siteStateBeforeRun.lastStatus === 'fail';
+  const runContext = { invokedBy, previousNextRun, resyncSlot };
+
   if (siteId === 'x-bookmarks') {
-    await runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now);
+    await runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, runContext);
     return;
   }
 
@@ -1397,7 +1411,12 @@ async function runSite(siteId, options = {}) {
     
     const currentState = await chrome.storage.local.get('state');
     currentState.state.bySite[siteId] = {
-      nextRun: computeNextRunAfterSuccess(now, site.schedule),
+      nextRun: computeNextRunAfterSuccess(now, site.schedule, {
+        mode: 'after-success',
+        previousNextRun,
+        invokedBy,
+        resyncSlot
+      }),
       lastStatus: 'ok',
       failCount: 0,
       lastRun: now
@@ -1456,8 +1475,7 @@ async function onAlarm() {
   const { settings, state } = await initializeStorage();
   const now = Date.now();
 
-  // 実行順序を固定するため、siteIdでソート
-  const allSiteIds = Object.keys(settings.sites).sort();
+  const allSiteIds = BUILTIN_SITE_IDS;
   const toRun = [];
   for (const siteId of allSiteIds) {
     const site = settings.sites[siteId];

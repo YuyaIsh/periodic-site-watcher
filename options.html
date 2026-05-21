@@ -84,20 +84,8 @@
       font-size: 14px;
       box-sizing: border-box;
     }
-    .url-input-row {
-      display: flex;
-      gap: 8px;
-      align-items: stretch;
-    }
-    .url-input-row input[type="text"] {
-      flex: 1;
-      min-width: 0;
-    }
-    .url-input-row button.open-site-url {
-      flex-shrink: 0;
-      margin-right: 0;
-      white-space: nowrap;
-      align-self: stretch;
+    .state-item button.open-site-url {
+      margin-left: 8px;
     }
     input[type="checkbox"] {
       width: auto;
@@ -140,13 +128,6 @@
     }
     button.delete:hover {
       background: #d33b2c;
-    }
-    .add-site {
-      background: white;
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     .status-ok {
       color: #34a853;
@@ -261,15 +242,6 @@
     </div>
   </div>
   
-  <div class="add-site">
-    <h2>サイトを追加</h2>
-    <div class="form-group">
-      <label>Site ID:</label>
-      <input type="text" id="new-site-id" placeholder="例: moneyforward">
-    </div>
-    <button id="add-site-button">サイトを追加</button>
-  </div>
-  
   <div id="sites-container"></div>
   
   <div style="text-align: center; margin-top: 30px;">
@@ -280,6 +252,7 @@
   
   <script src="utils/schedule.js"></script>
   <script src="utils/validation.js"></script>
+  <script src="utils/builtin-sites.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

@@ -174,17 +174,34 @@ function loadSiteOptionsScript(siteId) {
 }
 
 /**
+ * storage を組み込みサイト定義に正規化し、変更があれば保存する
+ *
+ * @param {Object|undefined} settings
+ * @param {Object|undefined} state
+ * @returns {Promise<{ settings: Object, state: Object }>}
+ */
+async function ensureNormalizedStorage(settings, state) {
+  const normalized = normalizeBuiltinSites(settings, state);
+  if (normalized.changed) {
+    await chrome.storage.local.set({
+      settings: normalized.settings,
+      state: normalized.state
+    });
+  }
+  return { settings: normalized.settings, state: normalized.state };
+}
+
+/**
  * サイト一覧を読み込んで表示する
- * 
- * storageから設定と状態を取得し、各サイトの設定フォームと
- * 実行状態（nextRun、lastStatus等）を表示する。
- * 
+ *
+ * 組み込みサイトを固定表示し、storage から設定と状態を取得して
+ * 各サイトの設定フォームと実行状態（nextRun、lastStatus 等）を表示する。
+ *
  * 状態表示は読み取り専用で、ユーザーが誤って変更できないようにしている。
  */
 async function loadSites() {
   const result = await chrome.storage.local.get(['settings', 'state']);
-  const settings = result.settings || { sites: {} };
-  const state = result.state || { bySite: {} };
+  const { settings, state } = await ensureNormalizedStorage(result.settings, result.state);
   
   // Slack Webhook URLを表示
   const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
@@ -199,13 +216,8 @@ async function loadSites() {
   const container = document.getElementById('sites-container');
   container.innerHTML = '';
   
-  const siteIds = Object.keys(settings.sites).sort();
-  
-  if (siteIds.length === 0) {
-    container.innerHTML = '<p>サイトが登録されていません。上記から追加してください。</p>';
-    return;
-  }
-  
+  const siteIds = BUILTIN_SITE_IDS;
+
   for (const siteId of siteIds) {
     const site = settings.sites[siteId];
     const siteState = state.bySite[siteId] || {};
@@ -218,7 +230,6 @@ async function loadSites() {
     siteDiv.innerHTML = `
       <summary class="site-header">
         <h2>${escapeHtml(siteId)}</h2>
-        <button class="delete" data-site-id="${escapeHtml(siteId)}">削除</button>
       </summary>
       
       <div class="site-accordion-body">
@@ -227,14 +238,6 @@ async function loadSites() {
           <input type="checkbox" id="${siteId}-enabled" ${site.enabled ? 'checked' : ''}>
           有効
         </label>
-      </div>
-      
-      <div class="form-group">
-        <label>URL:</label>
-        <div class="url-input-row">
-          <input type="text" id="${siteId}-url" value="${escapeHtml(site.url)}" placeholder="https://example.com">
-          <button type="button" class="open-site-url" data-site-id="${escapeHtml(siteId)}" title="このURLを新しいタブで開く">開く</button>
-        </div>
       </div>
       
       <div class="form-group">
@@ -258,6 +261,11 @@ async function loadSites() {
       <div class="site-options" id="${siteId}-site-options"></div>
       
       <div class="state-display">
+        <div class="state-item">
+          <span class="state-label">URL:</span>
+          ${escapeHtml(getBuiltinSiteUrl(siteId))}
+          <button type="button" class="open-site-url" data-site-id="${escapeHtml(siteId)}" title="このURLを新しいタブで開く">開く</button>
+        </div>
         <div class="state-item">
           <span class="state-label">次回実行:</span>
           ${siteState.nextRun ? new Date(siteState.nextRun).toLocaleString('ja-JP') : '未設定'}
@@ -323,16 +331,7 @@ async function loadSites() {
     if (siteId === 'x-bookmarks') {
       appendProcessedTweetIdsSection(siteDiv, siteId, siteState.processedTweetIds || {});
     }
-    
-    // 削除ボタンのイベントリスナーを設定（summary内のためstopPropagationでパネル開閉を防止）
-    const deleteButton = siteDiv.querySelector('.delete');
-    if (deleteButton) {
-      deleteButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        deleteSite(siteId);
-      });
-    }
-    
+
     // スケジュールタイプ変更のイベントリスナーを設定
     const scheduleTypeSelect = siteDiv.querySelector(`#${siteId}-schedule-type`);
     if (scheduleTypeSelect) {
@@ -340,6 +339,8 @@ async function loadSites() {
         updateScheduleFields(siteId);
       });
     }
+
+    attachScheduleEveryListeners(siteId);
     
     // URL「開く」ボタン
     const openUrlButton = siteDiv.querySelector('.open-site-url');
@@ -347,16 +348,9 @@ async function loadSites() {
       openUrlButton.addEventListener('click', (e) => {
         e.preventDefault();
         const id = openUrlButton.getAttribute('data-site-id');
-        const urlInput = document.getElementById(`${id}-url`);
-        const raw = urlInput ? urlInput.value.trim() : '';
+        const raw = getBuiltinSiteUrl(id);
         if (!raw) {
-          alert(`サイト "${id}" のURLが入力されていません。`);
-          return;
-        }
-        try {
-          new URL(raw);
-        } catch {
-          alert(`サイト "${id}" のURL形式が正しくありません。`);
+          alert(`サイト "${id}" の URL が定義されていません。`);
           return;
         }
         chrome.tabs.create({ url: raw });
@@ -379,33 +373,7 @@ async function loadSites() {
         const siteId = button.getAttribute('data-site-id');
         const localMode = button.getAttribute('data-local-mode') === 'true';
         const mockMode = !localMode && button.getAttribute('data-mock-mode') === 'true';
-        
-        // フォームから現在の値を読み取り、一時的に設定を更新
-        const urlInput = document.getElementById(`${siteId}-url`);
-        const url = urlInput ? urlInput.value.trim() : '';
-        
-        if (!url) {
-          alert(`サイト "${siteId}" のURLが入力されていません。URLを入力してから実行してください。`);
-          return;
-        }
-        
-        // URL形式の検証
-        try {
-          new URL(url);
-        } catch {
-          alert(`サイト "${siteId}" のURL形式が正しくありません。`);
-          return;
-        }
-        
-        // 一時的に設定を更新（実行時のみ使用）
-        const currentSettings = await chrome.storage.local.get('settings');
-        const settings = currentSettings.settings || { sites: {} };
-        if (!settings.sites[siteId]) {
-          settings.sites[siteId] = {};
-        }
-        settings.sites[siteId].url = url;
-        await chrome.storage.local.set({ settings });
-        
+
         const defaultLabel = button.getAttribute('data-mock-mode') === 'true'
           ? '今すぐ実行（モック）'
           : (button.getAttribute('data-local-mode') === 'true' ? '今すぐ実行（ローカル）' : '今すぐ実行');
@@ -446,6 +414,128 @@ async function loadSites() {
 }
 
 /**
+ * スケジュール間隔の単位ラベル
+ *
+ * @param {string} type
+ * @returns {string}
+ */
+function getScheduleEveryUnitLabel(type) {
+  if (type === 'hourly') {
+    return '時間ごと';
+  }
+  if (type === 'daily') {
+    return '日ごと';
+  }
+  return '週ごと';
+}
+
+/**
+ * @param {number} every
+ * @param {string} type
+ * @returns {string}
+ */
+function formatScheduleEveryLabel(every, type) {
+  return `${every} ${getScheduleEveryUnitLabel(type)}`;
+}
+
+/**
+ * @param {string} siteId
+ * @param {Object} schedule
+ * @returns {string}
+ */
+function renderScheduleEveryField(siteId, schedule) {
+  const every = schedule.every ?? 1;
+  return `
+    <div class="form-group schedule-every-group">
+      <label for="${siteId}-schedule-every">間隔:</label>
+      <input type="number" id="${siteId}-schedule-every" value="${every}" min="1" max="23" data-site-id="${siteId}">
+      <span id="${siteId}-schedule-every-label">${formatScheduleEveryLabel(every, schedule.type)}</span>
+    </div>
+  `;
+}
+
+/**
+ * @param {string} siteId
+ */
+function updateScheduleEveryLabel(siteId) {
+  const everyInput = document.getElementById(`${siteId}-schedule-every`);
+  const label = document.getElementById(`${siteId}-schedule-every-label`);
+  const typeSelect = document.getElementById(`${siteId}-schedule-type`);
+  if (!everyInput || !label || !typeSelect) {
+    return;
+  }
+  const every = parseInt(everyInput.value, 10);
+  const validEvery = Number.isInteger(every) && every >= 1 && every <= 23 ? every : 1;
+  label.textContent = formatScheduleEveryLabel(validEvery, typeSelect.value);
+}
+
+/**
+ * @param {string} siteId
+ */
+function attachScheduleEveryListeners(siteId) {
+  const everyInput = document.getElementById(`${siteId}-schedule-every`);
+  if (everyInput) {
+    everyInput.addEventListener('input', () => updateScheduleEveryLabel(siteId));
+  }
+}
+
+/**
+ * @param {string} siteId
+ * @returns {number|null}
+ */
+function readScheduleEveryFromForm(siteId) {
+  const everyValue = document.getElementById(`${siteId}-schedule-every`)?.value;
+  const every = parseInt(everyValue, 10);
+  if (!Number.isInteger(every) || every < 1 || every > 23) {
+    return null;
+  }
+  return every;
+}
+
+/**
+ * @param {string} siteId
+ * @param {string} scheduleType
+ * @returns {{ schedule?: Object, error?: string }}
+ */
+function buildScheduleFromForm(siteId, scheduleType) {
+  const every = readScheduleEveryFromForm(siteId);
+  if (every == null) {
+    return { error: `サイト "${siteId}" の間隔は 1〜23 の整数で入力してください。` };
+  }
+
+  const schedule = { type: scheduleType, every };
+
+  if (scheduleType === 'hourly') {
+    const minuteValue = document.getElementById(`${siteId}-schedule-minute`).value;
+    const minute = parseInt(minuteValue, 10);
+    if (isNaN(minute) || minute < 0 || minute > 59) {
+      return { error: `サイト "${siteId}" の分は0-59の範囲で入力してください。` };
+    }
+    schedule.minute = minute;
+  } else if (scheduleType === 'daily') {
+    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
+    if (!isValidTimeFormat(at)) {
+      return { error: `サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。` };
+    }
+    schedule.at = at;
+  } else if (scheduleType === 'weekly') {
+    const dowValue = document.getElementById(`${siteId}-schedule-dow`).value;
+    const dow = parseInt(dowValue, 10);
+    if (isNaN(dow) || dow < 0 || dow > 6) {
+      return { error: `サイト "${siteId}" の曜日が正しくありません。` };
+    }
+    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
+    if (!isValidTimeFormat(at)) {
+      return { error: `サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。` };
+    }
+    schedule.dow = dow;
+    schedule.at = at;
+  }
+
+  return { schedule };
+}
+
+/**
  * スケジュールタイプに応じた入力フィールドを生成する
  * 
  * スケジュールタイプ（hourly/daily/weekly）に応じて、
@@ -456,8 +546,11 @@ async function loadSites() {
  * @returns {string} HTML文字列
  */
 function renderScheduleFields(siteId, schedule) {
+  const everyField = renderScheduleEveryField(siteId, schedule);
+
   if (schedule.type === 'hourly') {
     return `
+      ${everyField}
       <div class="form-group">
         <label>分（0-59）:</label>
         <input type="number" id="${siteId}-schedule-minute" value="${schedule.minute || 0}" min="0" max="59">
@@ -465,6 +558,7 @@ function renderScheduleFields(siteId, schedule) {
     `;
   } else if (schedule.type === 'daily') {
     return `
+      ${everyField}
       <div class="form-group">
         <label>時刻（HH:MM）:</label>
         <input type="text" id="${siteId}-schedule-at" value="${schedule.at || '00:00'}" pattern="[0-9]{2}:[0-9]{2}" placeholder="HH:MM">
@@ -473,6 +567,7 @@ function renderScheduleFields(siteId, schedule) {
   } else if (schedule.type === 'weekly') {
     const days = ['日', '月', '火', '水', '木', '金', '土'];
     return `
+      ${everyField}
       <div class="form-group">
         <label>曜日:</label>
         <select id="${siteId}-schedule-dow">
@@ -487,7 +582,7 @@ function renderScheduleFields(siteId, schedule) {
       </div>
     `;
   }
-  return '';
+  return everyField;
 }
 
 /**
@@ -504,7 +599,7 @@ function updateScheduleFields(siteId) {
   const siteDiv = document.getElementById(`site-${siteId}`);
   const fieldsDiv = document.getElementById(`${siteId}-schedule-fields`);
   
-  let schedule = { type };
+  let schedule = { type, every: 1 };
   if (type === 'hourly') {
     schedule.minute = 0;
   } else if (type === 'daily') {
@@ -513,25 +608,10 @@ function updateScheduleFields(siteId) {
     schedule.dow = 0;
     schedule.at = '00:00';
   }
-  
-  fieldsDiv.innerHTML = renderScheduleFields(siteId, schedule);
-}
 
-/**
- * 新規サイト追加時のデフォルト設定
- * 
- * ユーザーが最小限の入力でサイトを追加できるよう、
- * 安全なデフォルト値を設定している。
- */
-const DEFAULT_SITE = {
-  url: '',
-  enabled: true,
-  timeoutSec: 30,
-  schedule: {
-    type: 'hourly',
-    minute: 0
-  }
-};
+  fieldsDiv.innerHTML = renderScheduleFields(siteId, schedule);
+  attachScheduleEveryListeners(siteId);
+}
 
 /**
  * フォームの Slack Webhook URL を settings オブジェクトに反映する（storage 保存はしない）
@@ -593,14 +673,19 @@ async function saveNotificationSettings() {
  * フォームから設定を読み取り、バリデーションを実施してからstorageに保存する。
  * バリデーションエラーがある場合は保存せず、ユーザーに通知する。
  * 
- * 保存後、新規追加されたサイトのnextRunを初期化する。
+ * 保存後、初回登場サイトの nextRun を初期化する。
  * 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）。
  * 
  * @param {string} siteId - 保存対象のサイトID
  */
 async function saveSite(siteId) {
-  const result = await chrome.storage.local.get('settings');
-  const settings = result.settings || { sites: {} };
+  if (!isBuiltinSiteId(siteId)) {
+    alert(`サイト "${siteId}" は組み込みサイトではありません。`);
+    return;
+  }
+
+  const result = await chrome.storage.local.get(['settings', 'state']);
+  const { settings } = await ensureNormalizedStorage(result.settings, result.state);
   
   if (!settings.sites[siteId]) {
     alert(`サイト "${siteId}" が見つかりません。`);
@@ -608,23 +693,10 @@ async function saveSite(siteId) {
   }
   
   const enabled = document.getElementById(`${siteId}-enabled`).checked;
-  const url = document.getElementById(`${siteId}-url`).value.trim();
+  const url = getBuiltinSiteUrl(siteId);
   const timeoutSecValue = document.getElementById(`${siteId}-timeoutSec`).value;
   const scheduleType = document.getElementById(`${siteId}-schedule-type`).value;
-  
-  // URLは必須（空文字列は無効）
-  if (!url) {
-    alert(`サイト "${siteId}" のURLが入力されていません。`);
-    return;
-  }
-  // URL形式の検証（URLコンストラクタで構文チェック）
-  try {
-    new URL(url);
-  } catch {
-    alert(`サイト "${siteId}" のURL形式が正しくありません。`);
-    return;
-  }
-  
+
   // タイムアウトは1-300秒の範囲に制限
   // 短すぎるとタイムアウトが頻発し、長すぎるとリソースを消費しすぎる
   const timeoutSec = parseInt(timeoutSecValue, 10);
@@ -632,39 +704,13 @@ async function saveSite(siteId) {
     alert(`サイト "${siteId}" のタイムアウトは1-300秒の範囲で入力してください。`);
     return;
   }
-  
-  let schedule = { type: scheduleType };
-  
-  if (scheduleType === 'hourly') {
-    const minuteValue = document.getElementById(`${siteId}-schedule-minute`).value;
-    const minute = parseInt(minuteValue, 10);
-    if (isNaN(minute) || minute < 0 || minute > 59) {
-      alert(`サイト "${siteId}" の分は0-59の範囲で入力してください。`);
-      return;
-    }
-    schedule.minute = minute;
-  } else if (scheduleType === 'daily') {
-    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
-    if (!isValidTimeFormat(at)) {
-      alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
-      return;
-    }
-    schedule.at = at;
-  } else if (scheduleType === 'weekly') {
-    const dowValue = document.getElementById(`${siteId}-schedule-dow`).value;
-    const dow = parseInt(dowValue, 10);
-    if (isNaN(dow) || dow < 0 || dow > 6) {
-      alert(`サイト "${siteId}" の曜日が正しくありません。`);
-      return;
-    }
-    const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
-    if (!isValidTimeFormat(at)) {
-      alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
-      return;
-    }
-    schedule.dow = dow;
-    schedule.at = at;
+
+  const built = buildScheduleFromForm(siteId, scheduleType);
+  if (built.error) {
+    alert(built.error);
+    return;
   }
+  const schedule = built.schedule;
   
   const siteData = {
     url,
@@ -701,21 +747,21 @@ async function saveSite(siteId) {
   settings.sites[siteId] = siteData;
   await chrome.storage.local.set({ settings });
   
-  // 新規追加されたサイトのnextRunを初期化
+  // 初回登場サイトの nextRun を初期化
   // 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）
   let { state } = await chrome.storage.local.get('state');
   const now = Date.now();
   if (!state || !state.bySite) {
     state = { bySite: {} };
   }
-  
+
   if (!state.bySite[siteId]) {
     state.bySite[siteId] = {
-      nextRun: computeNextRunAfterSuccess(now, siteData.schedule)
+      nextRun: computeNextRunAfterSuccess(now, siteData.schedule, { mode: 'initial' })
     };
     await chrome.storage.local.set({ state });
   }
-  
+
   alert(`サイト "${siteId}" の設定を保存しました`);
   await loadSites();
 }
@@ -726,36 +772,23 @@ async function saveSite(siteId) {
  * フォームから設定を読み取り、バリデーションを実施してからstorageに保存する。
  * バリデーションエラーがある場合は保存せず、ユーザーに通知する。
  * 
- * 保存後、新規追加されたサイトのnextRunを初期化する。
+ * 保存後、初回登場サイトの nextRun を初期化する。
  * 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）。
  */
 async function saveAllSites() {
-  const result = await chrome.storage.local.get('settings');
-  const settings = result.settings || { sites: {} };
+  const result = await chrome.storage.local.get(['settings', 'state']);
+  const { settings } = await ensureNormalizedStorage(result.settings, result.state);
 
   if (!applySlackWebhookFromForm(settings)) {
     return;
   }
 
-  for (const siteId of Object.keys(settings.sites)) {
+  for (const siteId of BUILTIN_SITE_IDS) {
     const enabled = document.getElementById(`${siteId}-enabled`).checked;
-    const url = document.getElementById(`${siteId}-url`).value.trim();
+    const url = getBuiltinSiteUrl(siteId);
     const timeoutSecValue = document.getElementById(`${siteId}-timeoutSec`).value;
     const scheduleType = document.getElementById(`${siteId}-schedule-type`).value;
-    
-    // URLは必須（空文字列は無効）
-    if (!url) {
-      alert(`サイト "${siteId}" のURLが入力されていません。`);
-      return;
-    }
-    // URL形式の検証（URLコンストラクタで構文チェック）
-    try {
-      new URL(url);
-    } catch {
-      alert(`サイト "${siteId}" のURL形式が正しくありません。`);
-      return;
-    }
-    
+
     // タイムアウトは1-300秒の範囲に制限
     // 短すぎるとタイムアウトが頻発し、長すぎるとリソースを消費しすぎる
     const timeoutSec = parseInt(timeoutSecValue, 10);
@@ -763,39 +796,13 @@ async function saveAllSites() {
       alert(`サイト "${siteId}" のタイムアウトは1-300秒の範囲で入力してください。`);
       return;
     }
-    
-    let schedule = { type: scheduleType };
-    
-    if (scheduleType === 'hourly') {
-      const minuteValue = document.getElementById(`${siteId}-schedule-minute`).value;
-      const minute = parseInt(minuteValue, 10);
-      if (isNaN(minute) || minute < 0 || minute > 59) {
-        alert(`サイト "${siteId}" の分は0-59の範囲で入力してください。`);
-        return;
-      }
-      schedule.minute = minute;
-    } else if (scheduleType === 'daily') {
-      const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
-      if (!isValidTimeFormat(at)) {
-        alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
-        return;
-      }
-      schedule.at = at;
-    } else if (scheduleType === 'weekly') {
-      const dowValue = document.getElementById(`${siteId}-schedule-dow`).value;
-      const dow = parseInt(dowValue, 10);
-      if (isNaN(dow) || dow < 0 || dow > 6) {
-        alert(`サイト "${siteId}" の曜日が正しくありません。`);
-        return;
-      }
-      const at = document.getElementById(`${siteId}-schedule-at`).value.trim();
-      if (!isValidTimeFormat(at)) {
-        alert(`サイト "${siteId}" の時刻形式が正しくありません。HH:MM形式で入力してください。`);
-        return;
-      }
-      schedule.dow = dow;
-      schedule.at = at;
+
+    const built = buildScheduleFromForm(siteId, scheduleType);
+    if (built.error) {
+      alert(built.error);
+      return;
     }
+    const schedule = built.schedule;
     
     const siteData = {
       url,
@@ -834,78 +841,26 @@ async function saveAllSites() {
   
   await chrome.storage.local.set({ settings });
   
-  // 新規追加されたサイトのnextRunを初期化
+  // 初回登場サイトの nextRun を初期化
   // 既存サイトのnextRunは変更しない（スケジュール変更時も次回実行時刻は保持）
   let { state } = await chrome.storage.local.get('state');
   const now = Date.now();
   if (!state || !state.bySite) {
     state = { bySite: {} };
   }
-  
-  for (const siteId of Object.keys(settings.sites)) {
+
+  for (const siteId of BUILTIN_SITE_IDS) {
     if (!state.bySite[siteId]) {
       const site = settings.sites[siteId];
       state.bySite[siteId] = {
-        nextRun: computeNextRunAfterSuccess(now, site.schedule)
+        nextRun: computeNextRunAfterSuccess(now, site.schedule, { mode: 'initial' })
       };
     }
   }
-  
+
   await chrome.storage.local.set({ state });
-  
+
   alert('設定を保存しました');
-  await loadSites();
-}
-
-/**
- * 新規サイトを追加する
- *
- * siteIdの重複チェックを行い、デフォルト設定で新規サイトを作成する。
- * 追加後は一覧を再読み込みして、新規サイトの設定フォームを表示する。
- */
-async function addNewSite() {
-  const siteIdInput = document.getElementById('new-site-id');
-  const siteId = siteIdInput.value.trim();
-
-  if (!siteId) {
-    alert('Site IDを入力してください');
-    return;
-  }
-
-  const result = await chrome.storage.local.get('settings');
-  const settings = result.settings || { sites: {} };
-  
-  if (settings.sites[siteId]) {
-    alert('このSite IDは既に存在します');
-    return;
-  }
-  
-  settings.sites[siteId] = { ...DEFAULT_SITE };
-  await chrome.storage.local.set({ settings });
-
-  siteIdInput.value = '';
-  await loadSites();
-}
-
-/**
- * サイトを削除する
- * 
- * 確認ダイアログを表示し、承認された場合のみ削除する。
- * settingsとstateの両方から削除する（整合性を保つため）。
- */
-async function deleteSite(siteId) {
-  if (!confirm(`サイト "${siteId}" を削除しますか？`)) {
-    return;
-  }
-  
-  const result = await chrome.storage.local.get(['settings', 'state']);
-  const settings = result.settings || { sites: {} };
-  const state = result.state || { bySite: {} };
-  
-  delete settings.sites[siteId];
-  delete state.bySite[siteId];
-  
-  await chrome.storage.local.set({ settings, state });
   await loadSites();
 }
 
@@ -945,13 +900,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (logClear) {
     logClear.addEventListener('click', () => clearOptionsApiLog());
   }
-  
-  // サイト追加ボタンのイベントリスナー
-  const addSiteButton = document.getElementById('add-site-button');
-  if (addSiteButton) {
-    addSiteButton.addEventListener('click', addNewSite);
-  }
-  
+
   // すべて保存ボタンのイベントリスナー
   const saveAllButton = document.getElementById('save-all-button');
   if (saveAllButton) {
