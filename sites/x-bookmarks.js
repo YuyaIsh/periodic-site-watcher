@@ -11,6 +11,9 @@ const DEFAULT_MAX_POSTS_PER_RUN = 3;
 const MAX_SCROLL_STEPS = 120;
 const MAX_STALL_COUNT = 3;
 const SCROLL_WAIT_MS = 1200;
+/** 「さらに表示」クリック後の DOM 更新待ち */
+const EXPAND_TEXT_WAIT_MS = 400;
+const EXPAND_TEXT_MAX_ROUNDS = 8;
 const TWITTER_MEDIA_URL_PREFIX = 'https://pbs.twimg.com/media/';
 
 /**
@@ -44,7 +47,7 @@ async function collect_x_bookmarks(site = {}) {
   let prevTweetCount = 0;
 
   for (let step = 0; step < MAX_SCROLL_STEPS; step++) {
-    const visiblePosts = collectVisiblePosts();
+    const visiblePosts = await collectVisiblePosts();
     for (const post of visiblePosts) {
       if (!post.tweetId) continue;
       if (!collected.has(post.tweetId)) {
@@ -107,8 +110,15 @@ async function collect_x_bookmarks(site = {}) {
   };
 }
 
-function collectVisiblePosts() {
+async function collectVisiblePosts() {
   const elements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+
+  for (const element of elements) {
+    if (findShowMoreButtonsInElement(element).length > 0) {
+      await expandTweetTextInElement(element);
+    }
+  }
+
   const tweetIdMap = new Map();
   for (const element of elements) {
     const tweetId = extractTweetId(element);
@@ -117,13 +127,97 @@ function collectVisiblePosts() {
 
   const posts = [];
   for (const element of elements) {
-    const post = extractPost(element, tweetIdMap);
+    const post = await extractPost(element, tweetIdMap);
     if (post) posts.push(post);
   }
   return posts;
 }
 
-function extractPost(tweetElement, tweetIdMap = new Map()) {
+/**
+ * ポスト本文の「さらに表示」をクリックして全文を展開する
+ * @param {Element} tweetElement - article[data-testid="tweet"]
+ */
+async function expandTweetTextInElement(tweetElement) {
+  if (!tweetElement) return;
+
+  let expandedTotal = 0;
+  for (let round = 0; round < EXPAND_TEXT_MAX_ROUNDS; round++) {
+    const buttons = findShowMoreButtonsInElement(tweetElement);
+    if (buttons.length === 0) break;
+    expandedTotal += buttons.length;
+
+    for (const btn of buttons) {
+      try {
+        btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        btn.click();
+      } catch (_) {}
+    }
+
+    await sleep(EXPAND_TEXT_WAIT_MS);
+  }
+
+  if (expandedTotal > 0) {
+    const tweetId = extractTweetId(tweetElement);
+    console.log(
+      `${LOG_PREFIX} ${SITE_ID} さらに表示を展開 tweetId=${tweetId || '?'} clicks=${expandedTotal}`
+    );
+  }
+}
+
+/**
+ * @param {Element} root
+ * @returns {HTMLElement[]}
+ */
+function findShowMoreButtonsInElement(root) {
+  const buttons = [];
+  const seen = new Set();
+
+  const add = (el) => {
+    if (!el || seen.has(el)) return;
+    if (!root.contains(el)) return;
+    seen.add(el);
+    buttons.push(el);
+  };
+
+  for (const el of root.querySelectorAll('[data-testid="tweet-text-show-more-link"]')) {
+    add(el);
+  }
+
+  for (const textEl of root.querySelectorAll('[data-testid="tweetText"]')) {
+    const parent = textEl.parentElement;
+    if (!parent) continue;
+    for (const btn of parent.querySelectorAll('button[role="button"]')) {
+      const label = (btn.innerText || btn.textContent || '').trim();
+      if (isShowMoreLabel(label)) add(btn);
+    }
+  }
+
+  return buttons;
+}
+
+function isShowMoreLabel(text) {
+  const t = (text || '').trim();
+  if (!t) return false;
+  if (t === 'さらに表示' || t === 'もっと表示') return true;
+  return /^show\s*more$/i.test(t);
+}
+
+/**
+ * メインポストの tweetText（引用カード内の本文は除外）
+ * @param {Element} tweetElement
+ * @returns {Element|null}
+ */
+function getMainTweetTextElement(tweetElement) {
+  const quoteRoot = findQuoteLabelContainer(tweetElement);
+  const all = tweetElement.querySelectorAll('[data-testid="tweetText"]');
+  for (const el of all) {
+    if (quoteRoot && quoteRoot.contains(el)) continue;
+    return el;
+  }
+  return all[0] || null;
+}
+
+async function extractPost(tweetElement, tweetIdMap = new Map()) {
   const tweetId = extractTweetId(tweetElement);
   if (!tweetId) return null;
   return {
@@ -135,7 +229,7 @@ function extractPost(tweetElement, tweetIdMap = new Map()) {
     imageUrls: extractTweetImageUrls(tweetElement),
     externalLinks: extractExternalLinks(tweetElement),
     xArticleUrls: extractXArticleUrls(tweetElement),
-    quotedPost: extractQuotedPost(tweetElement, tweetIdMap)
+    quotedPost: await extractQuotedPost(tweetElement, tweetIdMap)
   };
 }
 
@@ -156,7 +250,7 @@ function extractTweetUrl(tweetElement, tweetId) {
 }
 
 function extractTweetText(tweetElement) {
-  const textElement = tweetElement.querySelector('[data-testid="tweetText"]');
+  const textElement = getMainTweetTextElement(tweetElement);
   return (textElement?.innerText || textElement?.textContent || '').trim();
 }
 
@@ -248,12 +342,12 @@ function extractXArticleUrls(tweetElement) {
   return urls;
 }
 
-function extractQuotedPost(tweetElement, tweetIdMap) {
+async function extractQuotedPost(tweetElement, tweetIdMap) {
   const quoteLabelContainer = findQuoteLabelContainer(tweetElement);
-  const fromQuoteUi = extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer);
+  const fromQuoteUi = await extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer);
   if (fromQuoteUi) return fromQuoteUi;
 
-  const fromCard = extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer);
+  const fromCard = await extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer);
   if (fromCard) return fromCard;
 
   return null;
@@ -305,12 +399,17 @@ function extractTweetIdFromQuoteRoot(quoteRoot, tweetIdMap) {
   return null;
 }
 
-function buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement) {
+async function buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement) {
   const quotedElement = tweetId ? tweetIdMap.get(tweetId) : null;
   const source =
     quotedElement && quotedElement !== tweetElement ? quotedElement : quoteRoot;
 
-  const text = extractTweetText(source);
+  await expandTweetTextInElement(source);
+
+  const text =
+    source.matches && source.matches('article[data-testid="tweet"]')
+      ? extractTweetText(source)
+      : extractTweetTextFromRoot(source);
   const author = extractAuthorInfo(source);
   if (!tweetId && !text && !author?.displayName && !author?.screenName) return null;
 
@@ -333,14 +432,14 @@ function buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement) {
   };
 }
 
-function extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer) {
+async function extractQuotedPostFromQuoteUi(tweetElement, tweetIdMap, quoteLabelContainer) {
   const quoteRoot = findQuoteRootFromLabel(tweetElement);
   if (!quoteRoot) return null;
   const tweetId = extractTweetIdFromQuoteRoot(quoteRoot, tweetIdMap);
   return buildQuotedPostFromRoot(quoteRoot, tweetId, tweetIdMap, tweetElement);
 }
 
-function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer) {
+async function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelContainer) {
   const cards = tweetElement.querySelectorAll('[data-testid="card.wrapper"]');
   for (const card of cards) {
     if (quoteLabelContainer && quoteLabelContainer.contains(card)) continue;
@@ -355,10 +454,12 @@ function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelCo
     const fallbackUrl = href.startsWith('http') ? href : `https://x.com${href}`;
     const quotedElement = tweetIdMap.get(tweetId);
     if (!quotedElement || quotedElement === tweetElement) {
+      await expandTweetTextInElement(card);
+      const textFromCard = extractTweetTextFromRoot(card);
       return {
         tweetId,
         url: fallbackUrl,
-        text: '',
+        text: textFromCard,
         author: null,
         postedAt: null,
         imageUrls: [],
@@ -366,6 +467,7 @@ function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelCo
         xArticleUrls: []
       };
     }
+    await expandTweetTextInElement(quotedElement);
     return {
       tweetId,
       url: extractTweetUrl(quotedElement, tweetId),
@@ -378,6 +480,12 @@ function extractQuotedPostFromCardWrapper(tweetElement, tweetIdMap, quoteLabelCo
     };
   }
   return null;
+}
+
+/** 引用カード等、article 以外のルートから本文を取る */
+function extractTweetTextFromRoot(root) {
+  const textEl = root.querySelector('[data-testid="tweetText"]');
+  return (textEl?.innerText || textEl?.textContent || '').trim();
 }
 
 function isXInternalUrl(url) {
