@@ -7,6 +7,8 @@
 /** @readonly 表示・実行順（昇順） */
 const BUILTIN_SITE_IDS = Object.freeze([
   'moneyforward',
+  'moneyforward-balance',
+  'moneytree-vault',
   'rakuten-card',
   'x-bookmarks'
 ]);
@@ -15,10 +17,33 @@ const BUILTIN_SITE_IDS = Object.freeze([
 const BUILTIN_SITE_URLS = Object.freeze({
   moneyforward:
     'https://moneyforward.com/accounts/show/PcahB6adgVbq9ti28FGAXWM6sUfdwasEn8Nw2m8IsUc',
+  'moneyforward-balance': 'https://moneyforward.com/accounts',
+  'moneytree-vault': 'https://app.getmoneytree.com/app/vault',
   'rakuten-card':
     'https://www.rakuten-card.co.jp/e-navi/members/statement/index.xhtml?l-id=enavi_all_glonavi_statement',
   'x-bookmarks': 'https://x.com/i/bookmarks'
 });
+
+/** siteId ごとの schedule 初期値（未指定時は DEFAULT_SITE_CONFIG.schedule） */
+const SITE_SCHEDULE_DEFAULTS = Object.freeze({
+  'moneyforward-balance': {
+    type: 'daily',
+    every: 1,
+    at: '06:00'
+  }
+});
+
+/** siteId ごとの timeoutSec 初期値 */
+const SITE_TIMEOUT_DEFAULTS = Object.freeze({
+  'moneyforward-balance': 130,
+  'moneytree-vault': 60
+});
+
+/** オプションから削除した URL キー（storage 正規化で除去） */
+const DEPRECATED_SITE_OPTION_KEYS = Object.freeze([
+  'ifaApiUrl',
+  'householdApiUrl'
+]);
 
 /** 共通デフォルト */
 const DEFAULT_SITE_CONFIG = Object.freeze({
@@ -56,10 +81,14 @@ function getBuiltinSiteUrl(siteId) {
  * @returns {Object}
  */
 function createDefaultSiteConfig(siteId) {
+  const scheduleDefault =
+    SITE_SCHEDULE_DEFAULTS[siteId] || DEFAULT_SITE_CONFIG.schedule;
+  const timeoutSec = SITE_TIMEOUT_DEFAULTS[siteId] ?? DEFAULT_SITE_CONFIG.timeoutSec;
   return {
     url: getBuiltinSiteUrl(siteId),
     ...DEFAULT_SITE_CONFIG,
-    schedule: { ...DEFAULT_SITE_CONFIG.schedule }
+    timeoutSec,
+    schedule: { ...scheduleDefault }
   };
 }
 
@@ -115,6 +144,12 @@ function normalizeBuiltinSites(settings, state, now = Date.now()) {
           every: 1
         };
         changed = true;
+      }
+      for (const key of DEPRECATED_SITE_OPTION_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(settings.sites[siteId], key)) {
+          delete settings.sites[siteId][key];
+          changed = true;
+        }
       }
     }
     if (!state.bySite[siteId]) {

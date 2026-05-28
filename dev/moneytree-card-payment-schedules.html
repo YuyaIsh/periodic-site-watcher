@@ -1,0 +1,1173 @@
+<div class="column left sidebar">
+  <div class="sidebar-add-institution">
+    <div ng-transclude="leftColumnTitle"><left-column-title class="ng-scope">
+      <span class="pull-left ng-binding" ng-show="credentialAccountMode == vm.CREDENTIAL_ACCOUNT_MODES.PERSONAL">
+        口座残高
+      </span>
+      <span class="pull-left ng-binding ng-hide" ng-show="credentialAccountMode == vm.CREDENTIAL_ACCOUNT_MODES.POINTS">
+        ポイント
+      </span>
+      <span class="pull-left ng-binding ng-hide" ng-show="credentialAccountMode == vm.CREDENTIAL_ACCOUNT_MODES.CORPORATE">
+        法人口座
+      </span>
+      <a pull-right="" ng-click="vm.connectAccountsIconOnClick()">
+        <div data-test-id="new-button" class="new-account pull-right ng-binding">新規登録</div>
+      </a>
+      <div class="clearfix"></div>
+  </left-column-title></div>
+    <div class="clearfix"></div>
+  </div>
+  <div ng-transclude="leftColumnBody"><left-column-body class="ng-scope">
+    <mt-credentials hide-net-worth="hideNetWorth" group-by-institution-type="groupByInstitutionType" credential-account-mode="personal" on-account-change="vm.accountOnClick" on-credentials-change="vm.onCredentialsChange" class="ng-isolate-scope">
+<div class="mt-credentials">
+<div class="net-worth" ng-hide="hideNetWorth == true">
+  <div class="mt-credential success">
+    <div class="credential-header">
+      <span class="title pull-left ng-scope" translate="MT_CREDENTIALS.NET_WORTH">全資産</span>
+      <span class="amount pull-right ng-binding">-¥260,885</span>
+      <div class="clearfix"></div>
+    </div>
+    <div class="line-border thin col-xs-12"></div>
+    <div class="credential-body">
+      <mt-list-secondary list="vm.fakeAccountForNetworth" on-item-click="vm.accountOnClick" is-item-active="vm.accountIsActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope" style="">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+          <span translate="MT_CREDENTIALS.ALL_TRANSACTIONS" class="ng-scope">すべての明細</span>
+          <span class="pull-right">
+            <i class="icon-search-o"></i>
+          </span>
+        </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+    </div>
+  </div>
+</div>
+<!-- ngIf: groupByInstitutionType == false -->
+<!-- ngIf: groupByInstitutionType != false --><ul class="list-unstyled ng-scope" ng-if="groupByInstitutionType != false">
+  <!-- Group by Institution Type View -->
+  <!-- ngRepeat: groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index --><li ng-repeat="
+      groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index
+    " class="ng-scope" style="">
+    <div class="row institution-header">
+      <a data-test-id="vault-institution-type-bank" class="institution-type-total active" ng-class="{'active': vm.areCredentialsDisplayed(groupOfCredentials) }" ng-click="vm.toggleShowCredentialMode(groupOfCredentials)" style="">
+        <i class="icon-right-arrow"></i>
+        <span translate="INSTITUTION.TYPES.BANK" class="ng-scope">銀行</span>
+        <!-- ngIf: vm.isOnlyMissingCredential(groupOfCredentials) -->
+        <!-- ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) --><span ng-if="!vm.isOnlyMissingCredential(groupOfCredentials)" class="ng-scope">
+          <mt-credential-accounts-aggregate class="pull-right ng-isolate-scope" credentials="groupOfCredentials">
+<div class="mt-credential-accounts-aggregate l-inline-block">
+<span class="accounts-total ng-binding">¥456,197</span>
+</div>
+</mt-credential-accounts-aggregate>
+        </span><!-- end ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) -->
+      </a>
+    </div>
+    <div ng-show="vm.areCredentialsDisplayed(groupOfCredentials)" class="" style="">
+      <ul class="list-unstyled">
+        <!-- ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557878" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-bank-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/mufg_bank/thumb/mufg_bank_kanji.jpg" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/mufg_bank/thumb/mufg_bank_kanji.jpg">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">三菱UFJ銀行</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-jp.mufg.bk" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-alert" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info">接続の更新が必要です</div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid ng-hide" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      接続の更新が必要です
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">普通</span>
+<span class="display-amount-balance pull-right ">¥0</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557845" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-bank-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/sbi_sumishin_bank/thumb/sbi_sumishin_bank.png" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/sbi_sumishin_bank/thumb/sbi_sumishin_bank.png">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">住信SBIネット銀行</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-jp.co.netbk.www" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-notice" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="!credential.error_info">一時的なエラー</div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="credential.error_info">一時的なサーバーエラー</div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid ng-hide" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      一時的なエラー
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-notice" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope ng-hide">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">代表口座</span>
+<span class="display-amount-balance pull-right ">¥356,197</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">SBIハイブリッド預金</span>
+<span class="display-amount-balance pull-right ">¥100,000</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id -->
+        <li>
+          <div class="add-institution-by-type moneytree-green" ng-hide="vm.isManualAccount(groupOfCredentials)">
+            <a ng-click="vm.connectAccountsByGroupOfCredentials(groupOfCredentials)">
+              <span translate="MT_CREDENTIALS.ADD_INSTITUTION_TYPE" translate-values="{
+                  institutionType: vm.getInstitutionNameByGroupOfCredentials(groupOfCredentials)
+                }" class="ng-scope">銀行を追加する</span>
+              <div class="clearfix"></div>
+            </a>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </li><!-- end ngRepeat: groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index --><li ng-repeat="
+      groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index
+    " class="ng-scope">
+    <div class="row institution-header">
+      <a data-test-id="vault-institution-type-credit_card" class="institution-type-total active" ng-class="{'active': vm.areCredentialsDisplayed(groupOfCredentials) }" ng-click="vm.toggleShowCredentialMode(groupOfCredentials)" style="">
+        <i class="icon-right-arrow"></i>
+        <span translate="INSTITUTION.TYPES.CREDIT_CARD" class="ng-scope">クレジットカード</span>
+        <!-- ngIf: vm.isOnlyMissingCredential(groupOfCredentials) -->
+        <!-- ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) --><span ng-if="!vm.isOnlyMissingCredential(groupOfCredentials)" class="ng-scope">
+          <mt-credential-accounts-aggregate class="pull-right ng-isolate-scope" credentials="groupOfCredentials">
+<div class="mt-credential-accounts-aggregate l-inline-block">
+<span class="accounts-total ng-binding">-¥717,082</span>
+</div>
+</mt-credential-accounts-aggregate>
+        </span><!-- end ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) -->
+      </a>
+    </div>
+    <div ng-show="vm.areCredentialsDisplayed(groupOfCredentials)" class="" style="">
+      <ul class="list-unstyled">
+        <!-- ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-34895876" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-credit_card-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/paypay_card/thumb/paypay_card.png" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/paypay_card/thumb/paypay_card.png">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">PayPayカード</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-jp.co.paypay-card.www" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-neutral" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid ng-hide" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info">前回の更新日 2026/05/26</div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      前回の更新日 2026/05/26
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope ng-hide">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">PayPayカード</span>
+<span class="display-amount-balance pull-right ">-¥34,500</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557857" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-credit_card-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/smbc_card/thumb/smbc_card.png" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/smbc_card/thumb/smbc_card.png">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">三井住友カード</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-com.smbc-card" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-neutral" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid ng-hide" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info">前回の更新日 2026/05/26</div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      前回の更新日 2026/05/26
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope ng-hide">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">プラチナプリファード</span>
+<span class="display-amount-balance pull-right ">¥0</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">Visa LINEPay</span>
+<span class="display-amount-balance pull-right ">¥0</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope" style="">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">オーナーズV個人</span>
+<span class="display-amount-balance pull-right ">-¥3,274</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope" style="">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">Amazon旧ゴールド</span>
+<span class="display-amount-balance pull-right ">-¥48,724</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope" style="">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">三井住友ゴールドV NL</span>
+<span class="display-amount-balance pull-right ">-¥131,963</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557868" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-credit_card-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/generic/generic_logo_credit_card_120px.png" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/generic/generic_logo_credit_card_120px.png">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">楽天カード</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-jp.co.rakuten-card.e-navi" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-neutral" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid ng-hide" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info">前回の更新日 2026/05/26</div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      前回の更新日 2026/05/26
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope ng-hide">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">【利用不可】楽天カード(Visa)</span>
+<span class="display-amount-balance pull-right ">¥0</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope active" style="">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">楽天カード(Visa)</span>
+<span class="display-amount-balance pull-right ">-¥498,621</span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id -->
+        <li>
+          <div class="add-institution-by-type moneytree-green" ng-hide="vm.isManualAccount(groupOfCredentials)">
+            <a ng-click="vm.connectAccountsByGroupOfCredentials(groupOfCredentials)">
+              <span translate="MT_CREDENTIALS.ADD_INSTITUTION_TYPE" translate-values="{
+                  institutionType: vm.getInstitutionNameByGroupOfCredentials(groupOfCredentials)
+                }" class="ng-scope">クレジットカードを追加する</span>
+              <div class="clearfix"></div>
+            </a>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </li><!-- end ngRepeat: groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index --><li ng-repeat="
+      groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index
+    " class="ng-scope">
+    <div class="row institution-header">
+      <a data-test-id="vault-institution-type-stock" class="institution-type-total" ng-class="{'active': vm.areCredentialsDisplayed(groupOfCredentials) }" ng-click="vm.toggleShowCredentialMode(groupOfCredentials)">
+        <i class="icon-right-arrow"></i>
+        <span translate="INSTITUTION.TYPES.STOCK" class="ng-scope">証券、保険</span>
+        <!-- ngIf: vm.isOnlyMissingCredential(groupOfCredentials) -->
+        <!-- ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) --><span ng-if="!vm.isOnlyMissingCredential(groupOfCredentials)" class="ng-scope">
+          <mt-credential-accounts-aggregate class="pull-right ng-isolate-scope" credentials="groupOfCredentials">
+<div class="mt-credential-accounts-aggregate l-inline-block">
+<span class="accounts-total ng-binding">¥0</span>
+</div>
+</mt-credential-accounts-aggregate>
+        </span><!-- end ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) -->
+      </a>
+    </div>
+    <div ng-show="vm.areCredentialsDisplayed(groupOfCredentials)" class="ng-hide">
+      <ul class="list-unstyled">
+        <!-- ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557852" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' --><div ng-if="credential.formatted.institution.institution_type != 'manual'" class="ng-scope">
+        <div fallback-class="icon-stock-o t-moneytree-green">
+          <img ng-src="https://assets.moneytree.jp/institutions/logos/generic/generic_logo_stock_120px.png" class="img-responsive" src="https://assets.moneytree.jp/institutions/logos/generic/generic_logo_stock_120px.png">
+        </div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">SBI証券</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-jp.co.sbisec.site1" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small mt-credential-status-alert" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info"></div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid ng-hide" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12 ng-hide" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts ng-hide" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id -->
+        <li>
+          <div class="add-institution-by-type moneytree-green" ng-hide="vm.isManualAccount(groupOfCredentials)">
+            <a ng-click="vm.connectAccountsByGroupOfCredentials(groupOfCredentials)">
+              <span translate="MT_CREDENTIALS.ADD_INSTITUTION_TYPE" translate-values="{
+                  institutionType: vm.getInstitutionNameByGroupOfCredentials(groupOfCredentials)
+                }" class="ng-scope">証券、保険を追加する</span>
+              <div class="clearfix"></div>
+            </a>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </li><!-- end ngRepeat: groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index --><li ng-repeat="
+      groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index
+    " class="ng-scope">
+    <div class="row institution-header">
+      <a data-test-id="vault-institution-type-manual" class="institution-type-total" ng-class="{'active': vm.areCredentialsDisplayed(groupOfCredentials) }" ng-click="vm.toggleShowCredentialMode(groupOfCredentials)">
+        <i class="icon-right-arrow"></i>
+        <span translate="INSTITUTION.TYPES.MANUAL" class="ng-scope">その他</span>
+        <!-- ngIf: vm.isOnlyMissingCredential(groupOfCredentials) -->
+        <!-- ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) --><span ng-if="!vm.isOnlyMissingCredential(groupOfCredentials)" class="ng-scope">
+          <mt-credential-accounts-aggregate class="pull-right ng-isolate-scope" credentials="groupOfCredentials">
+<div class="mt-credential-accounts-aggregate l-inline-block">
+<span class="accounts-total ng-binding">¥0</span>
+</div>
+</mt-credential-accounts-aggregate>
+        </span><!-- end ngIf: !vm.isOnlyMissingCredential(groupOfCredentials) -->
+      </a>
+    </div>
+    <div ng-show="vm.areCredentialsDisplayed(groupOfCredentials)" class="ng-hide">
+      <ul class="list-unstyled">
+        <!-- ngRepeat: credential in groupOfCredentials track by credential.id --><li ng-repeat="credential in groupOfCredentials track by credential.id" class="ng-scope">
+          <!-- ngIf: credential.isMissing != true --><div ng-if="credential.isMissing != true" class="ng-scope">
+            <mt-credential data-test-id="mt-credential-19557843" credential="credential" on-account-click="vm.accountOnClick" is-account-active="vm.accountIsActive" on-change="vm.onCredentialChange" class="ng-isolate-scope">
+<div class="mt-credential">
+<mt-credential-template credential="credential" credential-account-mode="credentialAccountMode" on-change="onChange" on-edit-click="vm.onEditClick" on-account-click="onAccountClick" is-account-active="isAccountActive" on-credential-error-click="vm.onCredentialErrorClick" class="ng-isolate-scope">
+<div class="mt-credential-template">
+<div class="credential-header">
+  <!--picture-->
+  <div class="col-xs-3 self-no-gutter-left self-half-gutter-right">
+    <div class="credential-logo pull-left">
+      <!-- ngIf: credential.formatted.institution.institution_type != 'manual' -->
+      <!-- ngIf: credential.formatted.institution.institution_type == 'manual' --><div ng-if="credential.formatted.institution.institution_type == 'manual'" class="ng-scope">
+        <div class="icon-manual-o t-moneytree-green"></div>
+      </div><!-- end ngIf: credential.formatted.institution.institution_type == 'manual' -->
+    </div>
+  </div>
+  <div class="col-xs-9 self-no-gutter-left self-half-gutter-right text-left">
+    <!--displayName-->
+    <div class="col-xs-11 self-no-gutter-left self-half-gutter-right text-left">
+      <div class="credential-display-name ng-binding">その他の口座</div>
+    </div>
+    <!--edit-->
+    <div class="col-xs-1 self-half-gutter-left self-no-gutter-right text-right">
+      <div class="credential-edit">
+        <div data-test-id="cog-button-" class="edit-login" ng-click="onEditClick(credential)">
+          <a class="icon-cog grey-black"></a>
+        </div>
+      </div>
+    </div>
+    <!--guest-action-required-->
+    <div class="col-xs-12 self-no-gutter-left self-no-gutter-left">
+      <mt-credential-status-message credential="credential" is-processing="vm.isProcessing" class="ng-isolate-scope">
+<div class="mt-credential-status-message mt-font-size-small ng-hide mt-credential-status-alert" ng-show="credential.status != 'manual'" ng-class="{
+  'mt-credential-status-success': nil,
+  'mt-credential-status-neutral': (credential.formatted.isSuccess == true),
+  'mt-credential-status-running': (credential.formatted.isRunningStatus &amp;&amp; !credential.formatted.isSuspendedStatus),
+  'mt-credential-status-inactive-preselected': credential.formatted.isInactivePreselected,
+  'mt-credential-status-notice': (credential.error_info &amp;&amp; credential.error_info.actionable != true) &amp;&amp; credential.formatted.isSuccess != true,
+  'mt-credential-status-alert': (!credential.error_info || credential.error_info.actionable == true) &amp;&amp; credential.formatted.isSuccess != true }">
+
+<!-- Guest Action Required - class: warning -->
+<div class="container-fluid ng-hide" ng-show="(!isProcessing &amp;&amp; credential.formatted.isStoppableStatus &amp;&amp; !credential.formatted.isInactivePreselected &amp;&amp; !credential.formatted.isSuccess &amp;&amp; credential.status != 'manual')">
+  <div class="row">
+    <div class="col-xs-11 self-no-gutter-left ng-binding" ng-show="!credential.error_info"></div>
+    <div class="col-xs-11 self-no-gutter-left ng-binding ng-hide" ng-show="credential.error_info"></div>
+    <span class="col-xs-1 text-right self-no-gutter-right">
+      <i class="icon-arrow-sidebar"></i>
+    </span>
+  </div>
+  <span class="clearfix"></span>
+</div>
+
+<!-- Inactive Pre-selected - class: inactive-preselected -->
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+
+<!-- Shows the status message -->
+<div class="container-fluid ng-hide" ng-show="credential.formatted.isSuccess || isProcessing || credential.formatted.isRunningStatus || credential.formatted.isSuspendedStatus">
+  <div class="row">
+    <div class="col-xs-1 self-no-gutter-left ng-hide" ng-show="isProcessing || credential.formatted.isRunning || credential.formatted.isSuspendedStatus">
+      <loading-spinner show-spinner="true" no-transclude="true" class="ng-isolate-scope">
+<div class="loading-spinner">
+<div class="transcluded-content ng-hide dim" ng-class="{'dim': showSpinner}" ng-hide="noTransclude == true">
+  <div ng-transclude=""></div>
+</div>
+<div class="spinner" ng-show="showSpinner || noTransclude == true">
+  <div class="icon-spinner-new spin-animation"></div>
+</div>
+</div>
+</loading-spinner>
+    </div>
+    <div class="col-xs-10 self-no-gutter-left self-no-gutter-right ng-binding">
+      
+    </div>
+    <span class="clearfix"></span>
+  </div>
+</div>
+</div>
+</mt-credential-status-message>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+</div>
+<!-- ngIf: credential.formatted.isInactivePreselected -->
+<mt-credential-guest-action-required ng-show="vm.showGuestActionRequiredButton()" credential="credential" on-credential-error-click="onCredentialErrorClick" class="ng-isolate-scope ng-hide">
+<div class="mt-credential-guest-action-required text-center">
+<div class="container-fluid">
+  <div class="row">
+    <button class="mt-btn mt-btn-small mt-btn-default mt-btn-no-margin col-xs-12 mt-btn-alert" ng-class="{
+        &quot;mt-btn-notice&quot;: credential.error_info &amp;&amp; !credential.error_info.actionable,
+        &quot;mt-btn-alert&quot;: !credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable
+      }" ng-click="onCredentialErrorClick(credential)">
+      <span ng-show="credential.error_info &amp;&amp; !credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.MORE_INFORMATION" class="ng-scope ng-hide">こちらをご確認ください</span>
+      <span ng-show="!credential.error_info || credential.error_info &amp;&amp; credential.error_info.actionable" translate="MT_CREDENTIAL_GUEST_ACTION_REQUIRED.FIX_IT" class="ng-scope">こちらをご確認ください</span>
+    </button>
+  </div>
+</div>
+</div>
+</mt-credential-guest-action-required>
+<div class="line-border thin col-xs-12" ng-show="credential.accounts.length &gt; 0"></div>
+<div class="credential-accounts" ng-show="credential.accounts.length &gt; 0">
+  <div class="clearfix"></div>
+  <div class="credential-body">
+    <mt-list-secondary list="credential.accounts" on-item-click="onAccountClick" is-disabled="vm.isAccountClosed" is-item-active="isAccountActive" class="ng-isolate-scope">
+<div class="mt-list-secondary">
+<ul>
+  <!-- ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator --><li ng-repeat="item in list | orderBy: item : true : vm.handleNullComparator" ng-click="onItemClick(item)" ng-class="{'active': isItemActive(item)}" ng-disabled="isDisabled ? isDisabled(item) : false" class="ng-scope">
+    <div ng-transclude="itemContent"><item-content class="ng-scope">
+        <mt-account account="$parent.item" class="ng-isolate-scope">
+<div class="mt-account mt-font-size-normal" ng-class="{ 'inactive': account.status === 'closed' }">
+<span class="display-name pull-left ng-binding">現金記録</span>
+<span class="display-amount-balance pull-right "></span>
+<div class="clearfix"></div>
+</div>
+</mt-account>
+      </item-content></div>
+  </li><!-- end ngRepeat: item in list | orderBy: item : true : vm.handleNullComparator -->
+</ul>
+</div>
+</mt-list-secondary>
+  </div>
+</div>
+<div class="clearfix"></div>
+</div>
+</mt-credential-template>
+</div>
+</mt-credential>
+          </div><!-- end ngIf: credential.isMissing != true -->
+        </li><!-- end ngRepeat: credential in groupOfCredentials track by credential.id -->
+        <li>
+          <div class="add-institution-by-type moneytree-green ng-hide" ng-hide="vm.isManualAccount(groupOfCredentials)">
+            <a ng-click="vm.connectAccountsByGroupOfCredentials(groupOfCredentials)">
+              <span translate="MT_CREDENTIALS.ADD_INSTITUTION_TYPE" translate-values="{
+                  institutionType: vm.getInstitutionNameByGroupOfCredentials(groupOfCredentials)
+                }" class="ng-scope">その他を追加する</span>
+              <div class="clearfix"></div>
+            </a>
+          </div>
+        </li>
+      </ul>
+    </div>
+  </li><!-- end ngRepeat: groupOfCredentials in vm.credentials
+      | groupBy:'formatted.sortOrder'
+      | toArray:true
+      | orderBy:'$key'
+      track by $index -->
+</ul><!-- end ngIf: groupByInstitutionType != false -->
+<!-- ngIf: vm.credentials.length == 0 -->
+</div>
+</mt-credentials>
+  </left-column-body></div>
+</div>

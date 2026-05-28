@@ -3,6 +3,7 @@ importScripts(
   'utils/schedule.js',
   'utils/validation.js',
   'utils/builtin-sites.js',
+  'utils/external-api-urls.js',
   'utils/slack.js',
   'utils/options-api-log.js'
 );
@@ -36,14 +37,15 @@ function emitCollectLogsAndStrip(siteId, envelope) {
   const logs = envelope.collectLogs;
   if (Array.isArray(logs) && logs.length > 0) {
     for (const entry of logs) {
-      const line = `${siteId} ${entry.text}`;
       const lv = entry.level || 'log';
-      if (lv === 'warn') {
-        console.warn(`${LOG_PREFIX} [ページ]`, line);
-      } else if (lv === 'error') {
+      if (lv !== 'warn' && lv !== 'error') {
+        continue;
+      }
+      const line = `${siteId} ${entry.text}`;
+      if (lv === 'error') {
         console.error(`${LOG_PREFIX} [ページ]`, line);
       } else {
-        console.log(`${LOG_PREFIX} [ページ]`, line);
+        console.warn(`${LOG_PREFIX} [ページ]`, line);
       }
     }
   } else if (
@@ -57,6 +59,26 @@ function emitCollectLogsAndStrip(siteId, envelope) {
     );
   }
   delete envelope.collectLogs;
+}
+
+/**
+ * 巡回成功ログ（取得内容はここに1回だけ出力）
+ *
+ * @param {string} meta
+ * @param {string} siteId
+ * @param {Object} [envelope]
+ * @param {boolean} mockMode
+ */
+function logSiteRunSuccess(meta, siteId, envelope, mockMode) {
+  const recordCount = getPayloadRecordCount(siteId, envelope);
+  const countSummary = recordCount === null ? '' : ` ${recordCount}件`;
+  const mockNote = mockMode ? '（モック・取得のみ）' : '';
+  const resultData = envelope?.payload;
+  if (resultData !== undefined && resultData !== null) {
+    console.log(`${meta} 成功${mockNote}${countSummary}`, resultData);
+  } else {
+    console.log(`${meta} 成功${mockNote}${countSummary}`);
+  }
 }
 
 /**
@@ -743,6 +765,27 @@ function isAccountLoginHostUrl(href) {
   }
 }
 
+function isMoneytreeLoginHostUrl(href) {
+  if (!href) return false;
+  try {
+    const u = new URL(href);
+    return u.hostname === 'myaccount.getmoneytree.com' && u.pathname.includes('/login');
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * @param {Object} site
+ * @param {boolean} localMode
+ * @returns {string}
+ */
+function resolveIfaApiKey(site, localMode) {
+  return localMode && (site.ifaApiKeyLocal || '').trim()
+    ? (site.ifaApiKeyLocal || '').trim()
+    : (site.ifaApiKey || '');
+}
+
 /**
  * OAuth のリダイレクトで login.account から離れるまで待つ（すぐ tabs.update するとセッション未確定で再ログインになることがある）。
  *
@@ -761,6 +804,26 @@ async function waitForTabLeaveLoginHost(tabId, timeoutSec) {
     await sleepMs(200);
   }
   throw new Error('ログイン後のリダイレクトが完了しませんでした（ログイン画面のまま）');
+}
+
+/**
+ * Moneytree OAuth リダイレクト完了待ち
+ *
+ * @param {number} tabId
+ * @param {number} timeoutSec
+ * @returns {Promise<void>}
+ */
+async function waitForTabLeaveMoneytreeLoginHost(tabId, timeoutSec) {
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    const t = await chrome.tabs.get(tabId);
+    const u = t.url || '';
+    if (u && !u.startsWith('chrome://') && !isMoneytreeLoginHostUrl(u)) {
+      return;
+    }
+    await sleepMs(200);
+  }
+  throw new Error('Moneytree ログイン後のリダイレクトが完了しませんでした');
 }
 
 /**
@@ -789,42 +852,24 @@ const RC_MAX_MONTHS_BACKWARD = 60;
  * 楽天カード明細を household-statement-import へ送信する
  *
  * @param {string} siteId - サイトID（ログ用）
- * @param {Object} site - householdApiUrl, householdApiKey 必須（localMode 時は householdApiKeyLocal があればそちらを Bearer に使う）
+ * @param {Object} site - サイト設定（householdApiKey 必須。localMode 時は householdApiKeyLocal があればそちらを Bearer に使う）
  * @param {Array<Object>} items - 送信する明細
  * @param {boolean} mockMode
  * @param {boolean} localMode
  * @throws {Error}
  */
 async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, localMode) {
-  const apiUrl = (site.householdApiUrl || '').trim();
+  const apiUrl = EXTERNAL_API_URLS.HOUSEHOLD_STATEMENT_IMPORT;
   const apiKey = localMode && (site.householdApiKeyLocal || '').trim()
     ? (site.householdApiKeyLocal || '').trim()
     : (site.householdApiKey || '');
 
   if (mockMode) {
-    let logUrl = apiUrl || '(未設定)';
-    if (apiUrl && localMode) {
-      logUrl = resolveLocalApiUrl(apiUrl);
-    }
-    appendOptionsApiRequestLog({
-      siteId,
-      url: logUrl,
-      mockMode: true,
-      localMode,
-      body: { items }
-    }).catch(() => {});
-    console.log(`${LOG_PREFIX} [モック] ${siteId} household POST ${apiUrl || '(未設定)'} 件数=${items?.length ?? 0}`);
     return;
   }
 
-  if (!apiUrl) {
-    throw new Error('Household API URLが設定されていません。オプション画面で設定してください。');
-  }
   if (!apiKey) {
     throw new Error('Household API Keyが設定されていません。オプション画面で設定してください。');
-  }
-  if (!isValidApiUrl(apiUrl)) {
-    throw new Error(`Invalid Household API URL format: ${apiUrl}`);
   }
   let postUrl = apiUrl;
   if (localMode) {
@@ -914,8 +959,255 @@ function createRakutenLoginWait(tabId, timeoutSec) {
 
 /**
  * @param {number} tabId
+ * @param {number} timeoutSec
+ * @returns {{ promise: Promise<{ didLogin: boolean }>, cancel: (reason?: Error) => void }}
+ */
+function createMoneytreeLoginWait(tabId, timeoutSec) {
+  let resolved = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timeoutId;
+  /** @type {((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined} */
+  let listener;
+  /** @type {((reason?: unknown) => void) | undefined} */
+  let rejectOuter;
+
+  const promise = new Promise((resolve, reject) => {
+    rejectOuter = reject;
+
+    timeoutId = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        if (listener) chrome.runtime.onMessage.removeListener(listener);
+        reject(new Error('MONEYTREE_LOGIN_RESULT timeout'));
+      }
+    }, timeoutSec * 1000);
+
+    listener = (message, sender) => {
+      if (!message || typeof message !== 'object' || message.type !== 'MONEYTREE_LOGIN_RESULT') return;
+      if (sender.tab?.id !== tabId) return;
+      if (resolved) return;
+      resolved = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      chrome.runtime.onMessage.removeListener(listener);
+      if (message.error) {
+        reject(new Error(message.error));
+      } else {
+        resolve({ didLogin: !!message.didLogin });
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(listener);
+  });
+
+  const cancel = (reason) => {
+    if (resolved) return;
+    resolved = true;
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (listener) chrome.runtime.onMessage.removeListener(listener);
+    if (rejectOuter) {
+      rejectOuter(reason || new Error('Moneytree ログイン処理スクリプトの注入に失敗しました'));
+    }
+  };
+
+  return { promise, cancel };
+}
+
+/**
+ * @param {number} tabId
+ * @param {number} timeoutSec
+ * @returns {Promise<void>}
+ */
+async function waitForMoneytreeVaultDom(tabId, timeoutSec) {
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const header = document.querySelector('a[data-test-id="vault-institution-type-credit_card"]');
+        const root = header ? header.closest('li') : null;
+        const count = root ? root.querySelectorAll('.credential-accounts .mt-account').length : 0;
+        return { ready: !!header, accountCount: count };
+      }
+    });
+    if (result?.ready) {
+      return;
+    }
+    await sleepMs(250);
+  }
+  throw new Error('Moneytree Vault の DOM 読み込みがタイムアウトしました');
+}
+
+/**
+ * @param {number} tabId
+ * @param {number} timeoutSec
+ * @returns {Promise<{ didLogin: boolean }>}
+ */
+async function runMoneytreeLoginExec(tabId, timeoutSec) {
+  const { promise: loginPromise, cancel: cancelLoginWait } = createMoneytreeLoginWait(
+    tabId,
+    timeoutSec
+  );
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['sites/moneytree-login-exec.js']
+    });
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    cancelLoginWait(e);
+    await loginPromise.catch(() => {});
+    throw e;
+  }
+  return loginPromise;
+}
+
+/**
+ * @param {number} tabId
  * @param {string} siteId
  * @param {Object} site
+ * @param {boolean} mockMode
+ * @param {boolean} localMode
+ * @returns {Promise<Object>}
+ */
+function collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode) {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        chrome.runtime.onMessage.removeListener(messageListener);
+      }
+    };
+
+    const messageListener = (message, sender) => {
+      if (sender.tab?.id === tabId && message.type === 'COLLECT_RESULT' && !resolved) {
+        cleanup();
+        if (message.error) {
+          reject(new Error(message.error));
+        } else {
+          resolve(message.payload);
+        }
+        return true;
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(messageListener);
+
+    const files = ['sites/moneytree-vault.js', 'content-script.js'];
+
+    chrome.scripting
+      .executeScript({
+        target: { tabId },
+        files
+      })
+      .then(() => {
+        let retries = 0;
+        const maxRetries = 40;
+        const trySendMessage = () => {
+          chrome.tabs
+            .sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
+            .then((response) => {
+              if (response && response.type === 'COLLECT_RESULT' && !resolved) {
+                cleanup();
+                if (response.error) {
+                  reject(new Error(response.error));
+                } else {
+                  resolve(response.payload);
+                }
+              }
+            })
+            .catch((err) => {
+              if (retries < maxRetries && !resolved) {
+                retries++;
+                setTimeout(trySendMessage, 100);
+              } else {
+                cleanup();
+                reject(new Error(`Failed to send message to content script: ${err.message}`));
+              }
+            });
+        };
+        setTimeout(trySendMessage, 100);
+      })
+      .catch((err) => {
+        cleanup();
+        reject(new Error(`Failed to inject content script: ${err.message}`));
+      });
+
+    setTimeout(() => {
+      if (!resolved) {
+        cleanup();
+        reject(new Error('Content script timeout'));
+      }
+    }, Math.max(0, (site.timeoutSec - 5) * 1000));
+  });
+}
+
+/**
+ * @param {Object} site
+ * @param {string} siteId
+ * @param {number} tabId
+ * @param {boolean} mockMode
+ * @param {boolean} localMode
+ * @returns {Promise<Object>}
+ */
+async function runMoneytreeVaultFlow(site, siteId, tabId, mockMode, localMode) {
+  let loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec);
+
+  if (!loginResult.didLogin) {
+    const deadline = Date.now() + site.timeoutSec * 1000;
+    while (Date.now() < deadline) {
+      const tab = await chrome.tabs.get(tabId);
+      const cur = tab.url || '';
+      if (isMoneytreeLoginHostUrl(cur)) {
+        break;
+      }
+      if (cur.includes('app.getmoneytree.com')) {
+        break;
+      }
+      await sleepMs(250);
+    }
+    const tabAfterWait = await chrome.tabs.get(tabId);
+    const curAfterWait = tabAfterWait.url || '';
+    if (isMoneytreeLoginHostUrl(curAfterWait)) {
+      loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec);
+    }
+  }
+
+  if (loginResult.didLogin) {
+    await waitForTabComplete(tabId, site.timeoutSec);
+    await waitForTabLeaveMoneytreeLoginHost(tabId, site.timeoutSec);
+    await sleepMs(RAKUTEN_POST_LOGIN_SETTLE_MS);
+    const siteUrl = (site.url || '').trim();
+    if (siteUrl) {
+      const tab = await chrome.tabs.get(tabId);
+      const cur = tab.url || '';
+      if (shouldNavigateToSiteUrl(cur, siteUrl)) {
+        await chrome.tabs.update(tabId, { url: siteUrl });
+        await waitForTabComplete(tabId, site.timeoutSec);
+      }
+    }
+  } else {
+    const tab = await chrome.tabs.get(tabId);
+    const cur = tab.url || '';
+    if (isMoneytreeLoginHostUrl(cur)) {
+      throw new Error('Moneytree にログインできませんでした（ログイン画面のまま）');
+    }
+    const siteUrl = (site.url || '').trim();
+    if (siteUrl && shouldNavigateToSiteUrl(cur, siteUrl)) {
+      await chrome.tabs.update(tabId, { url: siteUrl });
+      await waitForTabComplete(tabId, site.timeoutSec);
+    }
+  }
+
+  await waitForMoneytreeVaultDom(tabId, site.timeoutSec);
+  return collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode);
+}
+
+/**
+ * @param {Object} site
+ * @param {string} siteId
+ * @param {number} tabId
  * @param {boolean} mockMode
  * @param {boolean} localMode
  * @returns {Promise<Object>}
@@ -1088,43 +1380,24 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
  * （Content Script では CORS で fetch できないため Service Worker で実行）
  *
  * @param {string} siteId - サイトID（ログ用）
- * @param {Object} site - サイト設定（ifaApiUrl, ifaApiKey 必須。localMode 時は ifaApiKeyLocal があればそちらを Bearer に使う）
+ * @param {Object} site - サイト設定（ifaApiKey 必須。localMode 時は ifaApiKeyLocal があればそちらを Bearer に使う）
  * @param {Array<{instrument: Object, items: Array}>} batches - 送信するバッチ配列
  * @param {boolean} mockMode - true の場合は fetch せず console.log のみ
  * @param {boolean} localMode
  * @throws {Error} 設定不足または API エラー時
  */
 async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMode) {
-  const apiUrl = (site.ifaApiUrl || '').trim();
-  const apiKey = localMode && (site.ifaApiKeyLocal || '').trim()
-    ? (site.ifaApiKeyLocal || '').trim()
-    : (site.ifaApiKey || '');
-  if (!apiUrl) {
-    throw new Error('IFA API URLが設定されていません。オプション画面で設定してください。');
-  }
-  if (!apiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
-  }
-  if (!isValidApiUrl(apiUrl)) {
-    throw new Error(`Invalid IFA API URL format: ${apiUrl}`);
-  }
+  const apiUrl = EXTERNAL_API_URLS.STATEMENT_IMPORT;
   let postUrl = apiUrl;
   if (localMode) {
     postUrl = resolveLocalApiUrl(apiUrl);
   }
   if (mockMode) {
-    const totalItems = batches?.reduce((sum, b) => sum + (b?.items?.length ?? 0), 0) ?? 0;
-    for (const batch of batches) {
-      appendOptionsApiRequestLog({
-        siteId,
-        url: postUrl,
-        mockMode: true,
-        localMode,
-        body: batch
-      }).catch(() => {});
-    }
-    console.log(`${LOG_PREFIX} [モック] ${siteId} IFA POST バッチ=${batches?.length ?? 0} 件数=${totalItems}`);
     return;
+  }
+  const apiKey = resolveIfaApiKey(site, localMode);
+  if (!apiKey) {
+    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
   }
   for (const batch of batches) {
     appendOptionsApiRequestLog({
@@ -1160,6 +1433,113 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
 }
 
 /**
+ * 口座残高スナップショットを IFA API へ送信する
+ *
+ * @param {string} siteId
+ * @param {Object} site
+ * @param {Object} body
+ * @param {boolean} mockMode
+ * @param {boolean} localMode
+ */
+async function sendBalanceSnapshot(siteId, site, body, mockMode, localMode) {
+  if (mockMode) {
+    return;
+  }
+  const apiUrl = EXTERNAL_API_URLS.BALANCE_SNAPSHOT;
+  const apiKey = resolveIfaApiKey(site, localMode);
+  if (!apiKey) {
+    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+  }
+  let postUrl = apiUrl;
+  if (localMode) {
+    postUrl = resolveLocalApiUrl(apiUrl);
+  }
+
+  appendOptionsApiRequestLog({
+    siteId,
+    url: postUrl,
+    mockMode: false,
+    localMode,
+    body
+  }).catch(() => {});
+
+  const response = await fetch(postUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'レスポンス取得失敗');
+    if (response.status === 401) {
+      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+    }
+    if (response.status === 400) {
+      throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
+    }
+    throw new Error(`Balance Snapshot APIエラー: ${errorText} (${response.status})`);
+  }
+}
+
+/**
+ * 支払予定を IFA API へ送信する
+ *
+ * @param {string} siteId
+ * @param {Object} site
+ * @param {Array<Object>} items
+ * @param {boolean} mockMode
+ * @param {boolean} localMode
+ */
+async function sendPaymentSchedule(siteId, site, items, mockMode, localMode) {
+  if (mockMode) {
+    return;
+  }
+  const apiUrl = EXTERNAL_API_URLS.PAYMENT_SCHEDULE;
+  const apiKey = resolveIfaApiKey(site, localMode);
+  if (!apiKey) {
+    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+  }
+  let postUrl = apiUrl;
+  if (localMode) {
+    postUrl = resolveLocalApiUrl(apiUrl);
+  }
+  const body = { items };
+
+  appendOptionsApiRequestLog({
+    siteId,
+    url: postUrl,
+    mockMode: false,
+    localMode,
+    body
+  }).catch(() => {});
+
+  const response = await fetch(postUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'レスポンス取得失敗');
+    if (response.status === 401) {
+      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+    }
+    if (response.status === 400) {
+      throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
+    }
+    throw new Error(`Payment Schedule APIエラー: ${errorText} (${response.status})`);
+  }
+  const result = await response.json();
+  if (result?.result === 'partial') {
+    console.warn('Payment Schedule API: 部分的に処理されました', result);
+  }
+}
+
+/**
  * 巡回結果ペイロードから記録件数を算出する（既知の siteId の形のみ）
  * ログ用・Slack 補足用。形が分からないサイトは null。
  *
@@ -1172,6 +1552,12 @@ function getPayloadRecordCount(siteId, payload) {
   if (!p) return null;
   if (siteId === 'moneyforward' && Array.isArray(p.batches)) {
     return p.batches.reduce((s, b) => s + (b?.items?.length ?? 0), 0);
+  }
+  if (siteId === 'moneyforward-balance' && p.balanceAmount != null) {
+    return 1;
+  }
+  if (siteId === 'moneytree-vault' && Array.isArray(p.items)) {
+    return p.items.length;
   }
   if (siteId === 'rakuten-card' && Array.isArray(p.items)) {
     return p.items.length;
@@ -1259,7 +1645,7 @@ async function runSite(siteId, options = {}) {
     console.log(`${meta} 開始`);
     const tab = await chrome.tabs.create({
       url: site.url,
-      active: siteId === 'rakuten-card'
+      active: siteId === 'rakuten-card' || siteId === 'moneytree-vault'
     });
     tabId = tab.id;
     
@@ -1284,6 +1670,8 @@ async function runSite(siteId, options = {}) {
     let payload;
     if (siteId === 'rakuten-card') {
       payload = await runRakutenCardFlow(site, siteId, tabId, mockMode, localMode);
+    } else if (siteId === 'moneytree-vault') {
+      payload = await runMoneytreeVaultFlow(site, siteId, tabId, mockMode, localMode);
     } else {
       payload = await new Promise((resolve, reject) => {
       let resolved = false;
@@ -1371,6 +1759,7 @@ async function runSite(siteId, options = {}) {
 
     emitCollectLogsAndStrip(siteId, payload);
 
+    if (!mockMode) {
     // site.apiUrl が存在する場合、Service Worker が送信を担当
     if (site.apiUrl && site.apiUrl.trim()) {
       const apiUrl = site.apiUrl.trim();
@@ -1380,9 +1769,7 @@ async function runSite(siteId, options = {}) {
         throw new Error(`Invalid API URL format: ${apiUrl}`);
       }
       
-      if (mockMode) {
-        console.log(`${LOG_PREFIX} [モック] ${siteId} 汎用API POST ${apiUrl}`);
-      } else {
+      {
         let postUrl = apiUrl;
         if (localMode) {
           postUrl = resolveLocalApiUrl(apiUrl);
@@ -1400,13 +1787,27 @@ async function runSite(siteId, options = {}) {
         }
       }
     }
-    // moneyforward: payload.batches を ifaApiUrl へ送信（Content Script では CORS で fetch できないため）
+    // moneyforward: payload.batches を statement-import へ送信（Content Script では CORS で fetch できないため）
     else if (siteId === 'moneyforward' && payload?.payload?.batches?.length) {
       await sendMoneyforwardBatches(siteId, site, payload.payload.batches, mockMode, localMode);
+    }
+    else if (siteId === 'moneyforward-balance' && payload?.payload?.balanceAmount != null) {
+      const { balanceAmount, recordedAt, note } = payload.payload;
+      await sendBalanceSnapshot(
+        siteId,
+        site,
+        { balanceAmount, recordedAt, note: note ?? 'MoneyForward sync' },
+        mockMode,
+        localMode
+      );
+    }
+    else if (siteId === 'moneytree-vault' && payload?.payload?.items?.length) {
+      await sendPaymentSchedule(siteId, site, payload.payload.items, mockMode, localMode);
     }
     // rakuten-card: household-statement-import へ items を送信
     else if (siteId === 'rakuten-card' && payload?.payload?.items?.length) {
       await sendRakutenCardHouseholdImport(siteId, site, payload.payload.items, mockMode, localMode);
+    }
     }
     
     const currentState = await chrome.storage.local.get('state');
@@ -1423,9 +1824,9 @@ async function runSite(siteId, options = {}) {
     };
     await chrome.storage.local.set({ state: currentState.state });
 
+    logSiteRunSuccess(meta, siteId, payload, mockMode);
+
     const recordCount = getPayloadRecordCount(siteId, payload);
-    const countSummary = recordCount === null ? '' : ` ${recordCount}件`;
-    console.log(`${meta} 成功${countSummary}`);
 
     if (settings?.slackWebhookUrl && recordCount === 0) {
       await notifySlackOnZeroItems(settings.slackWebhookUrl, { siteId });

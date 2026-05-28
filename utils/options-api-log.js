@@ -19,7 +19,7 @@ function summarizeBodyForOptionsLog(body, siteId) {
       return body;
     }
     if (
-      siteId === 'rakuten-card' &&
+      (siteId === 'moneytree-vault' || siteId === 'rakuten-card') &&
       body &&
       typeof body === 'object' &&
       Array.isArray(/** @type {{ items?: unknown[] }} */ (body).items)
