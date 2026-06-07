@@ -63,11 +63,7 @@
       return;
     }
 
-    var storage = await chrome.storage.local.get('settings');
-    var site =
-      storage.settings && storage.settings.sites
-        ? storage.settings.sites['moneytree-vault']
-        : null;
+    var site = window.__EFFECTIVE_SITE__ || null;
     var email = site && site.loginEmail ? String(site.loginEmail).trim() : '';
     var pwd = site && site.loginPassword ? String(site.loginPassword).trim() : '';
 

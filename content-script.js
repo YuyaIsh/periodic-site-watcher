@@ -91,8 +91,10 @@ if (!window.__PERIODIC_SITE_WATCHER_COLLECT_LISTENER__) {
       }
       (async () => {
         try {
-          const { settings } = await chrome.storage.local.get('settings');
-          const site = settings?.sites?.[message.siteId] || {};
+          const site =
+            message.effectiveSite && typeof message.effectiveSite === 'object'
+              ? message.effectiveSite
+              : {};
           const collectContext =
             message.collectContext !== undefined &&
             message.collectContext !== null &&

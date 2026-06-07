@@ -199,20 +199,128 @@ async function ensureNormalizedStorage(settings, state) {
  *
  * 状態表示は読み取り専用で、ユーザーが誤って変更できないようにしている。
  */
+/**
+ * Doppler 管理対象 secret の状態表を描画する
+ *
+ * @param {Array<{ key: string, label: string, configured: boolean, required: boolean, usedBy: string[] }>} status
+ */
+function renderDopplerSecretStatusTable(status) {
+  const container = document.getElementById('doppler-secret-status');
+  if (!container) return;
+
+  const rows = (status || []).map((entry) => {
+    const stateClass = entry.configured ? 'doppler-status-ok' : 'doppler-status-missing';
+    const stateLabel = entry.configured ? '取得済み' : (entry.required ? '未取得（必須）' : '未取得');
+    const usedBy = Array.isArray(entry.usedBy) ? entry.usedBy.join(', ') : '';
+    return `
+      <tr>
+        <td><code>${escapeHtml(entry.key)}</code></td>
+        <td>${escapeHtml(entry.label)}</td>
+        <td class="${stateClass}">${escapeHtml(stateLabel)}</td>
+        <td>${escapeHtml(usedBy)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <table class="doppler-secret-table" aria-label="Doppler管理対象シークレット">
+      <thead>
+        <tr>
+          <th>Doppler キー</th>
+          <th>説明</th>
+          <th>状態</th>
+          <th>利用サイト</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+/**
+ * Doppler キャッシュメタ情報を表示する
+ *
+ * @param {Object|null} cache
+ */
+function renderDopplerCacheMeta(cache) {
+  const el = document.getElementById('doppler-cache-meta');
+  if (!el) return;
+  if (!cache || !cache.fetchedAt) {
+    el.textContent = '最終取得: （未取得）';
+    return;
+  }
+  const fetched = new Date(cache.fetchedAt).toLocaleString('ja-JP');
+  const expires = cache.expiresAt
+    ? new Date(cache.expiresAt).toLocaleString('ja-JP')
+    : '—';
+  el.textContent = `最終取得: ${fetched} / キャッシュ期限: ${expires}`;
+}
+
+async function refreshDopplerSection() {
+  const tokenInput = document.getElementById('doppler-service-token');
+  const result = await chrome.storage.local.get(['settings', 'state', DOPPLER_CACHE_STORAGE_KEY]);
+  const { settings } = await ensureNormalizedStorage(result.settings, result.state);
+  if (tokenInput) {
+    tokenInput.value = settings?.doppler?.serviceToken || '';
+  }
+  const cache = result[DOPPLER_CACHE_STORAGE_KEY] || null;
+  renderDopplerCacheMeta(cache);
+  renderDopplerSecretStatusTable(
+    summarizeDopplerSecretStatus(cache?.values || null)
+  );
+}
+
+async function saveDopplerSettings() {
+  const tokenInput = document.getElementById('doppler-service-token');
+  const token = tokenInput ? tokenInput.value.trim() : '';
+  const result = await chrome.storage.local.get('settings');
+  const settings = result.settings || { sites: {} };
+  if (!settings.doppler || typeof settings.doppler !== 'object') {
+    settings.doppler = { serviceToken: '' };
+  }
+  settings.doppler.serviceToken = token;
+  await chrome.storage.local.set({ settings });
+  await chrome.storage.local.remove(DOPPLER_CACHE_STORAGE_KEY);
+  alert('Doppler 設定を保存しました');
+  await refreshDopplerSection();
+}
+
+async function fetchDopplerSecretsFromOptions() {
+  const button = document.getElementById('fetch-doppler-button');
+  const defaultLabel = '接続テスト / 今すぐ取得';
+  if (button) {
+    button.disabled = true;
+    button.textContent = '取得中...';
+  }
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'DOPPLER_FETCH_SECRETS',
+      forceRefresh: true
+    });
+    if (!response?.success) {
+      alert('Doppler 取得に失敗しました: ' + (response?.error || '不明なエラー'));
+      return;
+    }
+    renderDopplerCacheMeta({
+      fetchedAt: response.fetchedAt,
+      expiresAt: response.expiresAt
+    });
+    renderDopplerSecretStatusTable(response.status || []);
+    alert('Doppler から secrets を取得しました');
+  } catch (err) {
+    alert('Doppler 取得に失敗しました: ' + err.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = defaultLabel;
+    }
+  }
+}
+
 async function loadSites() {
   const result = await chrome.storage.local.get(['settings', 'state']);
   const { settings, state } = await ensureNormalizedStorage(result.settings, result.state);
-  
-  // Slack Webhook URLを表示
-  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
-  if (slackWebhookUrlInput) {
-    slackWebhookUrlInput.value = settings.slackWebhookUrl || '';
-  }
-  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
-  if (slackSuccessWebhookUrlInput) {
-    slackSuccessWebhookUrlInput.value = settings.slackSuccessWebhookUrl || '';
-  }
-  
+
   const container = document.getElementById('sites-container');
   container.innerHTML = '';
   
@@ -614,60 +722,6 @@ function updateScheduleFields(siteId) {
 }
 
 /**
- * フォームの Slack Webhook URL を settings オブジェクトに反映する（storage 保存はしない）
- *
- * @param {Object} settings - 更新対象の settings
- * @returns {boolean} 検証に成功したら true、失敗時は alert 済みで false
- */
-function applySlackWebhookFromForm(settings) {
-  const slackWebhookUrlInput = document.getElementById('slack-webhook-url');
-  const slackSuccessWebhookUrlInput = document.getElementById('slack-success-webhook-url');
-  if (!slackWebhookUrlInput) {
-    return true;
-  }
-  const slackWebhookUrl = slackWebhookUrlInput.value.trim();
-  if (slackWebhookUrl) {
-    try {
-      new URL(slackWebhookUrl);
-      settings.slackWebhookUrl = slackWebhookUrl;
-    } catch {
-      alert('Slack Webhook URL（失敗・0件時）の形式が正しくありません。');
-      return false;
-    }
-  } else {
-    delete settings.slackWebhookUrl;
-  }
-  if (slackSuccessWebhookUrlInput) {
-    const successUrl = slackSuccessWebhookUrlInput.value.trim();
-    if (successUrl) {
-      try {
-        new URL(successUrl);
-        settings.slackSuccessWebhookUrl = successUrl;
-      } catch {
-        alert('Slack Webhook URL（成功・稼働確認）の形式が正しくありません。');
-        return false;
-      }
-    } else {
-      delete settings.slackSuccessWebhookUrl;
-    }
-  }
-  return true;
-}
-
-/**
- * 通知設定（Slack Webhook のみ）を storage に保存する
- */
-async function saveNotificationSettings() {
-  const result = await chrome.storage.local.get('settings');
-  const settings = result.settings || { sites: {} };
-  if (!applySlackWebhookFromForm(settings)) {
-    return;
-  }
-  await chrome.storage.local.set({ settings });
-  alert('通知設定を保存しました');
-}
-
-/**
  * 指定されたサイトの設定を保存する
  * 
  * フォームから設定を読み取り、バリデーションを実施してからstorageに保存する。
@@ -779,10 +833,6 @@ async function saveAllSites() {
   const result = await chrome.storage.local.get(['settings', 'state']);
   const { settings } = await ensureNormalizedStorage(result.settings, result.state);
 
-  if (!applySlackWebhookFromForm(settings)) {
-    return;
-  }
-
   for (const siteId of BUILTIN_SITE_IDS) {
     const enabled = document.getElementById(`${siteId}-enabled`).checked;
     const url = getBuiltinSiteUrl(siteId);
@@ -883,6 +933,7 @@ function escapeHtml(text) {
 // ページ読み込み時にサイト一覧を表示し、イベントリスナーを設定
 document.addEventListener('DOMContentLoaded', () => {
   loadSites();
+  refreshDopplerSection();
   refreshOptionsApiLog();
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -907,9 +958,13 @@ document.addEventListener('DOMContentLoaded', () => {
     saveAllButton.addEventListener('click', saveAllSites);
   }
 
-  const saveNotificationButton = document.getElementById('save-notification-button');
-  if (saveNotificationButton) {
-    saveNotificationButton.addEventListener('click', saveNotificationSettings);
+  const saveDopplerButton = document.getElementById('save-doppler-button');
+  if (saveDopplerButton) {
+    saveDopplerButton.addEventListener('click', saveDopplerSettings);
+  }
+  const fetchDopplerButton = document.getElementById('fetch-doppler-button');
+  if (fetchDopplerButton) {
+    fetchDopplerButton.addEventListener('click', fetchDopplerSecretsFromOptions);
   }
 });
 

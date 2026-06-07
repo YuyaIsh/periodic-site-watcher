@@ -128,6 +128,12 @@ function normalizeBuiltinSites(settings, state, now = Date.now()) {
     }
   }
 
+  if (typeof migrateDeprecatedSecretsFromSettings === 'function') {
+    if (migrateDeprecatedSecretsFromSettings(settings)) {
+      changed = true;
+    }
+  }
+
   for (const siteId of BUILTIN_SITE_IDS) {
     if (!settings.sites[siteId]) {
       settings.sites[siteId] = createDefaultSiteConfig(siteId);

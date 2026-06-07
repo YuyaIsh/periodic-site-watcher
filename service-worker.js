@@ -2,6 +2,7 @@
 importScripts(
   'utils/schedule.js',
   'utils/validation.js',
+  'utils/doppler-secrets.js',
   'utils/builtin-sites.js',
   'utils/external-api-urls.js',
   'utils/slack.js',
@@ -204,8 +205,25 @@ function assertInjectablePageUrl(tabUrl) {
  * @param {number} tabId
  * @param {string} collectSiteId 例 x-bookmarks, x_article, chatgpt_project
  */
+/**
+ * 注入前に effective site 設定をページへ渡す
+ *
+ * @param {number} tabId
+ * @param {Object} effectiveSite
+ * @returns {Promise<void>}
+ */
+async function injectEffectiveSiteContext(tabId, effectiveSite) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (site) => {
+      window.__EFFECTIVE_SITE__ = site;
+    },
+    args: [effectiveSite || {}]
+  });
+}
+
 function injectAndCollect(tabId, collectSiteId, options) {
-  const { mockMode = false, collectContext, timeoutSec: rawTimeout } = options;
+  const { mockMode = false, localMode = false, effectiveSite, collectContext, timeoutSec: rawTimeout } = options;
   const timeoutSec =
     typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 60;
 
@@ -231,11 +249,13 @@ function injectAndCollect(tabId, collectSiteId, options) {
     chrome.runtime.onMessage.addListener(messageListener);
     const scriptPath = 'sites/' + collectSiteId.replace(/_/g, '-') + '.js';
 
-    chrome.scripting
-      .executeScript({
-        target: { tabId },
-        files: [scriptPath, 'content-script.js']
-      })
+    injectEffectiveSiteContext(tabId, effectiveSite)
+      .then(() =>
+        chrome.scripting.executeScript({
+          target: { tabId },
+          files: [scriptPath, 'content-script.js']
+        })
+      )
       .then(() => {
         let retries = 0;
         const maxRetries = 5;
@@ -245,6 +265,8 @@ function injectAndCollect(tabId, collectSiteId, options) {
               type: 'COLLECT',
               siteId: collectSiteId,
               mockMode,
+              localMode,
+              effectiveSite: effectiveSite || {},
               collectContext
             })
             .then((response) => {
@@ -446,6 +468,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, 
       await activateCollectTab(bookmarksTabId);
       const bmEnvelope = await injectAndCollect(bookmarksTabId, 'x-bookmarks', {
         mockMode,
+        effectiveSite: site,
         timeoutSec: bookmarkCollectTimeoutSec,
         collectContext: { processedTweetIds }
       });
@@ -462,7 +485,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, 
         ...persistOpts
       });
       console.log(`Site ${siteId} bookmark pipeline: no new posts`);
-      return;
+      return { success: true };
     }
 
     let okCount = 0;
@@ -488,6 +511,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, 
             assertInjectablePageUrl(artTab.url || '');
             const envelope = await injectAndCollect(tabIdArticle, 'x_article', {
               mockMode,
+              effectiveSite: site,
               timeoutSec: Math.max(pipelineTimeoutSec, 45),
               collectContext: {}
             });
@@ -517,6 +541,7 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, 
           assertInjectablePageUrl(gpTabMeta.url || '');
           const gptEnvelope = await injectAndCollect(gptTabId, 'chatgpt_project', {
             mockMode,
+            effectiveSite: site,
             timeoutSec: Math.max(pipelineTimeoutSec, 90),
             collectContext: { __chatgptPostPayload: payloadForChatgpt }
           });
@@ -588,8 +613,11 @@ async function runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, 
         mockMode
       });
     }
+    return { success: true };
   } catch (error) {
     await persistSiteRunFailure(siteId, settings, site, now, error);
+    const err = error instanceof Error ? error : new Error(String(error));
+    return { success: false, error: err.message };
   }
 }
 
@@ -776,17 +804,6 @@ function isMoneytreeLoginHostUrl(href) {
 }
 
 /**
- * @param {Object} site
- * @param {boolean} localMode
- * @returns {string}
- */
-function resolveIfaApiKey(site, localMode) {
-  return localMode && (site.ifaApiKeyLocal || '').trim()
-    ? (site.ifaApiKeyLocal || '').trim()
-    : (site.ifaApiKey || '');
-}
-
-/**
  * OAuth のリダイレクトで login.account から離れるまで待つ（すぐ tabs.update するとセッション未確定で再ログインになることがある）。
  *
  * @param {number} tabId
@@ -852,24 +869,22 @@ const RC_MAX_MONTHS_BACKWARD = 60;
  * 楽天カード明細を household-statement-import へ送信する
  *
  * @param {string} siteId - サイトID（ログ用）
- * @param {Object} site - サイト設定（householdApiKey 必須。localMode 時は householdApiKeyLocal があればそちらを Bearer に使う）
+ * @param {Record<string, string>} secrets - Doppler secrets
  * @param {Array<Object>} items - 送信する明細
  * @param {boolean} mockMode
  * @param {boolean} localMode
  * @throws {Error}
  */
-async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, localMode) {
+async function sendRakutenCardHouseholdImport(siteId, secrets, items, mockMode, localMode) {
   const apiUrl = EXTERNAL_API_URLS.HOUSEHOLD_STATEMENT_IMPORT;
-  const apiKey = localMode && (site.householdApiKeyLocal || '').trim()
-    ? (site.householdApiKeyLocal || '').trim()
-    : (site.householdApiKey || '');
+  const apiKey = resolveApiKey(secrets, localMode);
 
   if (mockMode) {
     return;
   }
 
   if (!apiKey) {
-    throw new Error('Household API Keyが設定されていません。オプション画面で設定してください。');
+    throw new Error('API_KEY が設定されていません。Doppler で API_KEY を設定してください。');
   }
   let postUrl = apiUrl;
   if (localMode) {
@@ -893,7 +908,7 @@ async function sendRakutenCardHouseholdImport(siteId, site, items, mockMode, loc
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'レスポンス取得失敗');
     if (response.status === 401) {
-      throw new Error(`認証エラー: Household API Keyが無効です (${response.status})`);
+      throw new Error(`認証エラー: API_KEY が無効です (${response.status})`);
     }
     if (response.status === 400) {
       throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
@@ -1042,12 +1057,13 @@ async function waitForMoneytreeVaultDom(tabId, timeoutSec) {
  * @param {number} timeoutSec
  * @returns {Promise<{ didLogin: boolean }>}
  */
-async function runMoneytreeLoginExec(tabId, timeoutSec) {
+async function runMoneytreeLoginExec(tabId, timeoutSec, effectiveSite) {
   const { promise: loginPromise, cancel: cancelLoginWait } = createMoneytreeLoginWait(
     tabId,
     timeoutSec
   );
   try {
+    await injectEffectiveSiteContext(tabId, effectiveSite);
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['sites/moneytree-login-exec.js']
@@ -1069,7 +1085,7 @@ async function runMoneytreeLoginExec(tabId, timeoutSec) {
  * @param {boolean} localMode
  * @returns {Promise<Object>}
  */
-function collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode) {
+function collectMoneytreeVaultPage(tabId, siteId, effectiveSite, mockMode, localMode) {
   return new Promise((resolve, reject) => {
     let resolved = false;
 
@@ -1096,17 +1112,25 @@ function collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode) {
 
     const files = ['sites/moneytree-vault.js', 'content-script.js'];
 
-    chrome.scripting
-      .executeScript({
-        target: { tabId },
-        files
-      })
+    injectEffectiveSiteContext(tabId, effectiveSite)
+      .then(() =>
+        chrome.scripting.executeScript({
+          target: { tabId },
+          files
+        })
+      )
       .then(() => {
         let retries = 0;
         const maxRetries = 40;
         const trySendMessage = () => {
           chrome.tabs
-            .sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
+            .sendMessage(tabId, {
+              type: 'COLLECT',
+              siteId,
+              mockMode,
+              localMode,
+              effectiveSite: effectiveSite || {}
+            })
             .then((response) => {
               if (response && response.type === 'COLLECT_RESULT' && !resolved) {
                 cleanup();
@@ -1139,7 +1163,7 @@ function collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode) {
         cleanup();
         reject(new Error('Content script timeout'));
       }
-    }, Math.max(0, (site.timeoutSec - 5) * 1000));
+    }, Math.max(0, ((effectiveSite?.timeoutSec || 30) - 5) * 1000));
   });
 }
 
@@ -1152,7 +1176,7 @@ function collectMoneytreeVaultPage(tabId, siteId, site, mockMode, localMode) {
  * @returns {Promise<Object>}
  */
 async function runMoneytreeVaultFlow(site, siteId, tabId, mockMode, localMode) {
-  let loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec);
+  let loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec, site);
 
   if (!loginResult.didLogin) {
     const deadline = Date.now() + site.timeoutSec * 1000;
@@ -1170,7 +1194,7 @@ async function runMoneytreeVaultFlow(site, siteId, tabId, mockMode, localMode) {
     const tabAfterWait = await chrome.tabs.get(tabId);
     const curAfterWait = tabAfterWait.url || '';
     if (isMoneytreeLoginHostUrl(curAfterWait)) {
-      loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec);
+      loginResult = await runMoneytreeLoginExec(tabId, site.timeoutSec, site);
     }
   }
 
@@ -1212,7 +1236,7 @@ async function runMoneytreeVaultFlow(site, siteId, tabId, mockMode, localMode) {
  * @param {boolean} localMode
  * @returns {Promise<Object>}
  */
-function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
+function collectRakutenCardPage(tabId, siteId, effectiveSite, mockMode, localMode) {
   return new Promise((resolve, reject) => {
     let resolved = false;
 
@@ -1241,14 +1265,24 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
     // （前月リンクや「今月」合わせの tabs.update 後は content-script なしだと sendMessage が届かない）
     const files = ['sites/rakuten-card.js', 'content-script.js'];
 
-    chrome.scripting.executeScript({
-      target: { tabId },
-      files: files
-    }).then(() => {
+    injectEffectiveSiteContext(tabId, effectiveSite)
+      .then(() =>
+        chrome.scripting.executeScript({
+          target: { tabId },
+          files: files
+        })
+      )
+      .then(() => {
       let retries = 0;
       const maxRetries = 40;
       const trySendMessage = () => {
-        chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
+        chrome.tabs.sendMessage(tabId, {
+          type: 'COLLECT',
+          siteId,
+          mockMode,
+          localMode,
+          effectiveSite: effectiveSite || {}
+        })
           .then((response) => {
             if (response && response.type === 'COLLECT_RESULT' && !resolved) {
               cleanup();
@@ -1280,7 +1314,7 @@ function collectRakutenCardPage(tabId, siteId, site, mockMode, localMode) {
         cleanup();
         reject(new Error('Content script timeout'));
       }
-    }, Math.max(0, (site.timeoutSec - 5) * 1000));
+    }, Math.max(0, ((effectiveSite?.timeoutSec || 30) - 5) * 1000));
   });
 }
 
@@ -1299,6 +1333,7 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
     site.timeoutSec
   );
   try {
+    await injectEffectiveSiteContext(tabId, site);
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['sites/rakuten-card-login-exec.js']
@@ -1380,13 +1415,13 @@ async function runRakutenCardFlow(site, siteId, tabId, mockMode, localMode) {
  * （Content Script では CORS で fetch できないため Service Worker で実行）
  *
  * @param {string} siteId - サイトID（ログ用）
- * @param {Object} site - サイト設定（ifaApiKey 必須。localMode 時は ifaApiKeyLocal があればそちらを Bearer に使う）
+ * @param {Record<string, string>} secrets - Doppler secrets
  * @param {Array<{instrument: Object, items: Array}>} batches - 送信するバッチ配列
  * @param {boolean} mockMode - true の場合は fetch せず console.log のみ
  * @param {boolean} localMode
  * @throws {Error} 設定不足または API エラー時
  */
-async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMode) {
+async function sendMoneyforwardBatches(siteId, secrets, batches, mockMode, localMode) {
   const apiUrl = EXTERNAL_API_URLS.STATEMENT_IMPORT;
   let postUrl = apiUrl;
   if (localMode) {
@@ -1395,9 +1430,9 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
   if (mockMode) {
     return;
   }
-  const apiKey = resolveIfaApiKey(site, localMode);
+  const apiKey = resolveApiKey(secrets, localMode);
   if (!apiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+    throw new Error('API_KEY が設定されていません。Doppler で API_KEY を設定してください。');
   }
   for (const batch of batches) {
     appendOptionsApiRequestLog({
@@ -1418,12 +1453,12 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'レスポンス取得失敗');
       if (response.status === 401) {
-        throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+        throw new Error(`認証エラー: API_KEY が無効です (${response.status})`);
       }
       if (response.status === 400) {
         throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
       }
-      throw new Error(`IFA APIエラー: ${errorText} (${response.status})`);
+      throw new Error(`外部 API エラー: ${errorText} (${response.status})`);
     }
     const result = await response.json();
     if (result?.result === 'partial') {
@@ -1441,14 +1476,14 @@ async function sendMoneyforwardBatches(siteId, site, batches, mockMode, localMod
  * @param {boolean} mockMode
  * @param {boolean} localMode
  */
-async function sendBalanceSnapshot(siteId, site, body, mockMode, localMode) {
+async function sendBalanceSnapshot(siteId, secrets, body, mockMode, localMode) {
   if (mockMode) {
     return;
   }
   const apiUrl = EXTERNAL_API_URLS.BALANCE_SNAPSHOT;
-  const apiKey = resolveIfaApiKey(site, localMode);
+  const apiKey = resolveApiKey(secrets, localMode);
   if (!apiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+    throw new Error('API_KEY が設定されていません。Doppler で API_KEY を設定してください。');
   }
   let postUrl = apiUrl;
   if (localMode) {
@@ -1474,7 +1509,7 @@ async function sendBalanceSnapshot(siteId, site, body, mockMode, localMode) {
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'レスポンス取得失敗');
     if (response.status === 401) {
-      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+      throw new Error(`認証エラー: API_KEY が無効です (${response.status})`);
     }
     if (response.status === 400) {
       throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
@@ -1492,14 +1527,14 @@ async function sendBalanceSnapshot(siteId, site, body, mockMode, localMode) {
  * @param {boolean} mockMode
  * @param {boolean} localMode
  */
-async function sendPaymentSchedule(siteId, site, items, mockMode, localMode) {
+async function sendPaymentSchedule(siteId, secrets, items, mockMode, localMode) {
   if (mockMode) {
     return;
   }
   const apiUrl = EXTERNAL_API_URLS.PAYMENT_SCHEDULE;
-  const apiKey = resolveIfaApiKey(site, localMode);
+  const apiKey = resolveApiKey(secrets, localMode);
   if (!apiKey) {
-    throw new Error('IFA API Keyが設定されていません。オプション画面で設定してください。');
+    throw new Error('API_KEY が設定されていません。Doppler で API_KEY を設定してください。');
   }
   let postUrl = apiUrl;
   if (localMode) {
@@ -1526,7 +1561,7 @@ async function sendPaymentSchedule(siteId, site, items, mockMode, localMode) {
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'レスポンス取得失敗');
     if (response.status === 401) {
-      throw new Error(`認証エラー: IFA API Keyが無効です (${response.status})`);
+      throw new Error(`認証エラー: API_KEY が無効です (${response.status})`);
     }
     if (response.status === 400) {
       throw new Error(`リクエストエラー: ${errorText} (${response.status})`);
@@ -1592,9 +1627,9 @@ async function runSite(siteId, options = {}) {
   const invokedBy = options.invokedBy === 'manual' ? 'manual' : 'schedule';
   const localMode = options.localMode === true;
   const mockMode = localMode ? false : (options.mockMode === true);
-  const { settings } = await chrome.storage.local.get('settings');
-  const site = settings.sites[siteId];
-  if (!site) {
+  const { settings: rawSettings } = await initializeStorage();
+  const siteExists = rawSettings?.sites?.[siteId];
+  if (!siteExists) {
     console.warn(`${LOG_PREFIX} ${siteId} 失敗: 設定にサイトが存在しません`);
     // 設定不整合をエラーとして扱い、次回リトライをスケジュール
     const now = Date.now();
@@ -1608,7 +1643,25 @@ async function runSite(siteId, options = {}) {
       lastError: 'Site not found in settings'
     };
     await chrome.storage.local.set({ state: currentState.state });
-    return;
+    return { success: false, error: 'Site not found in settings' };
+  }
+
+  let secrets;
+  let settings;
+  let site;
+  try {
+    secrets = await ensureDopplerSecrets(rawSettings, {
+      forceRefresh: invokedBy === 'manual',
+      allowStaleOnError: invokedBy === 'schedule'
+    });
+    settings = applyDopplerSecretsToSettings(rawSettings, secrets);
+    site = settings.sites[siteId];
+  } catch (dopplerError) {
+    const now = Date.now();
+    const err = dopplerError instanceof Error ? dopplerError : new Error(String(dopplerError));
+    console.warn(`${LOG_PREFIX} ${siteId} Doppler 取得失敗:`, err.message);
+    await persistSiteRunFailure(siteId, rawSettings, siteExists, now, err);
+    return { success: false, error: err.message };
   }
 
   const meta = formatSiteLogMeta(siteId, invokedBy, mockMode, localMode);
@@ -1621,8 +1674,7 @@ async function runSite(siteId, options = {}) {
   const runContext = { invokedBy, previousNextRun, resyncSlot };
 
   if (siteId === 'x-bookmarks') {
-    await runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, runContext);
-    return;
+    return runSiteXBookmarksPipeline(siteId, site, settings, mockMode, now, runContext);
   }
 
   let tabId = null;
@@ -1703,16 +1755,26 @@ async function runSite(siteId, options = {}) {
       const scriptPath = 'sites/' + siteId.replace(/_/g, '-') + '.js';
       const files = [scriptPath, 'content-script.js'];
       
-      chrome.scripting.executeScript({
-        target: { tabId },
-        files: files
-      }).then(() => {
+      injectEffectiveSiteContext(tabId, site)
+        .then(() =>
+          chrome.scripting.executeScript({
+            target: { tabId },
+            files: files
+          })
+        )
+        .then(() => {
         // Content ScriptのonMessageリスナーが登録されるまでの時間差を考慮し、
         // 再試行ロジックで確実にメッセージを送信する
         let retries = 0;
         const maxRetries = 5;
         const trySendMessage = () => {
-          chrome.tabs.sendMessage(tabId, { type: 'COLLECT', siteId, mockMode, localMode })
+          chrome.tabs.sendMessage(tabId, {
+            type: 'COLLECT',
+            siteId,
+            mockMode,
+            localMode,
+            effectiveSite: site
+          })
             .then((response) => {
               // chrome.tabs.sendMessageのPromiseがresolveした場合、responseが返ってくる
               // この場合、messageListenerは呼ばれないため、ここで処理する
@@ -1789,24 +1851,24 @@ async function runSite(siteId, options = {}) {
     }
     // moneyforward: payload.batches を statement-import へ送信（Content Script では CORS で fetch できないため）
     else if (siteId === 'moneyforward' && payload?.payload?.batches?.length) {
-      await sendMoneyforwardBatches(siteId, site, payload.payload.batches, mockMode, localMode);
+      await sendMoneyforwardBatches(siteId, secrets, payload.payload.batches, mockMode, localMode);
     }
     else if (siteId === 'moneyforward-balance' && payload?.payload?.balanceAmount != null) {
       const { balanceAmount, recordedAt, note } = payload.payload;
       await sendBalanceSnapshot(
         siteId,
-        site,
+        secrets,
         { balanceAmount, recordedAt, note: note ?? 'MoneyForward sync' },
         mockMode,
         localMode
       );
     }
     else if (siteId === 'moneytree-vault' && payload?.payload?.items?.length) {
-      await sendPaymentSchedule(siteId, site, payload.payload.items, mockMode, localMode);
+      await sendPaymentSchedule(siteId, secrets, payload.payload.items, mockMode, localMode);
     }
     // rakuten-card: household-statement-import へ items を送信
     else if (siteId === 'rakuten-card' && payload?.payload?.items?.length) {
-      await sendRakutenCardHouseholdImport(siteId, site, payload.payload.items, mockMode, localMode);
+      await sendRakutenCardHouseholdImport(siteId, secrets, payload.payload.items, mockMode, localMode);
     }
     }
     
@@ -1842,9 +1904,12 @@ async function runSite(siteId, options = {}) {
       });
     }
 
+    return { success: true };
   } catch (error) {
     console.warn(`${meta} 失敗:`, error.message || String(error));
     await persistSiteRunFailure(siteId, settings, site, now, error);
+    const err = error instanceof Error ? error : new Error(String(error));
+    return { success: false, error: err.message };
   } finally {
     // タブは必ず閉じる（finallyで確実に実行）
     // タブが既に閉じられている場合のエラーは無視
@@ -1949,17 +2014,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// オプション画面からの Doppler 取得テスト
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'DOPPLER_FETCH_SECRETS') {
+    (async () => {
+      try {
+        const { settings } = await initializeStorage();
+        const secrets = await ensureDopplerSecrets(settings, {
+          forceRefresh: message.forceRefresh !== false
+        });
+        const cache = await loadDopplerSecretsCache();
+        sendResponse({
+          success: true,
+          fetchedAt: cache?.fetchedAt || Date.now(),
+          expiresAt: cache?.expiresAt || null,
+          status: summarizeDopplerSecretStatus(secrets)
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    })();
+    return true;
+  }
+});
+
 // オプション画面からの「今すぐ実行」メッセージを受信
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'RUN_SITE') {
     (async () => {
       try {
-        await runSite(message.siteId, {
+        const result = await runSite(message.siteId, {
           invokedBy: 'manual',
           mockMode: message.mockMode || false,
           localMode: message.localMode === true
         });
-        sendResponse({ success: true });
+        sendResponse(result || { success: true });
       } catch (error) {
         sendResponse({ success: false, error: error.message });
       }

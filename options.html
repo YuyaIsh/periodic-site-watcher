@@ -208,6 +208,36 @@
       font-size: 13px;
       margin: 0;
     }
+    .doppler-secret-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    .doppler-secret-table th,
+    .doppler-secret-table td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    .doppler-secret-table th {
+      background: #f8f9fa;
+      font-weight: 600;
+    }
+    .doppler-status-ok {
+      color: #34a853;
+      font-weight: 600;
+    }
+    .doppler-status-missing {
+      color: #ea4335;
+      font-weight: 600;
+    }
+    .doppler-meta {
+      color: #666;
+      font-size: 13px;
+      margin: 8px 0 0;
+    }
   </style>
 </head>
 <body>
@@ -225,21 +255,22 @@
     <pre id="options-api-log" aria-label="API送信ログ"></pre>
   </div>
   
-  <div class="site-section">
-    <h2>通知設定</h2>
+  <div class="site-section" id="doppler-section">
+    <h2>Doppler 設定</h2>
+    <p style="color: #666; font-size: 13px; margin-top: 0;">
+      API キー・Slack Webhook・ログイン資格情報は Doppler から取得します。手動実行のたびに再取得し、スケジュール実行はキャッシュ（6時間）を利用します。
+    </p>
     <div class="form-group">
-      <label>Slack Webhook URL（失敗・0件時）:</label>
-      <input type="text" id="slack-webhook-url" placeholder="https://hooks.slack.com/services/..." style="width: 100%;">
-      <small style="color: #666; font-size: 12px;">失敗時・記録0件の注意喚起に使います（任意）</small>
+      <label for="doppler-service-token">Doppler Service Token:</label>
+      <input type="password" id="doppler-service-token" placeholder="dp.st...." autocomplete="off">
+      <small style="color: #666; font-size: 12px;">読み取り専用の Service Token を設定してください（値は表示しません）。</small>
     </div>
-    <div class="form-group" style="margin-top: 12px;">
-      <label>Slack Webhook URL（成功・稼働確認）:</label>
-      <input type="text" id="slack-success-webhook-url" placeholder="https://hooks.slack.com/services/..." style="width: 100%;">
-      <small style="color: #666; font-size: 12px;">巡回成功時の heartbeat 用。エラー用とは別 Incoming Webhook を推奨（任意）</small>
+    <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+      <button type="button" id="save-doppler-button" style="background: #1a73e8;">Doppler 設定を保存</button>
+      <button type="button" id="fetch-doppler-button" class="secondary" style="background: #5f6368;">接続テスト / 今すぐ取得</button>
     </div>
-    <div style="margin-top: 12px;">
-      <button type="button" id="save-notification-button" style="background: #1a73e8;">通知設定を保存</button>
-    </div>
+    <p class="doppler-meta" id="doppler-cache-meta">最終取得: （未取得）</p>
+    <div id="doppler-secret-status"></div>
   </div>
   
   <div id="sites-container"></div>
@@ -252,6 +283,7 @@
   
   <script src="utils/schedule.js"></script>
   <script src="utils/validation.js"></script>
+  <script src="utils/doppler-secrets.js"></script>
   <script src="utils/builtin-sites.js"></script>
   <script src="options.js"></script>
 </body>

@@ -74,11 +74,7 @@
       return;
     }
 
-    var storage = await chrome.storage.local.get('settings');
-    var site =
-      storage.settings && storage.settings.sites
-        ? storage.settings.sites['rakuten-card']
-        : null;
+    var site = window.__EFFECTIVE_SITE__ || null;
     var pwd = site && site.loginPassword ? String(site.loginPassword).trim() : '';
 
     if (!pwd) {
